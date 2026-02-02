@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Результаты сканирования
+scan_results/
+Test_scan/
+*_scan/
+network_scan/
+single_host_scan/
+quick_scan/
+web_scan/
+
+# Логи (кроме примера)
+logs/
+!logs/README.md
+
+# Отчеты (кроме примера)
+reports/
+!reports/README.md
+
+# Временные файлы
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Файлы настроек (кроме примера)
+config.ini
+secrets.txt
+*.key
+*.pem
+
+# Выходные данные Nmap
+*.xml
+*.nmap
+*.gnmap
+*.html
+!reports/example_*
+
+# Примеры файлов для документации
+example_output/
+sample_data/
+
+# Системные файлы
+.directory
+.trash-*
