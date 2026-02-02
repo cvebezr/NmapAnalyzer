@@ -1,4 +1,4 @@
-# Nmap Scan Analyzer
+# NmapAnalyzer
 
 [![Python Version](https://img.shields.io/badge/python-3.6%2B-blue.svg)](https://www.python.org/)
 [![GitHub stars](https://img.shields.io/github/stars/cvebezr/NmapAnalyzer.svg)](https://github.com/cvebezr/NmapAnalyzer/stargazers)
