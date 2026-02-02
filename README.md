@@ -35,7 +35,7 @@ sudo yum install nmap libxslt python3
 # macOS
 brew install nmap libxslt
 ```
-###How to use
+### How to use
 ```bash
 sudo chmod +x ./NmapAnalyzer.py
 
