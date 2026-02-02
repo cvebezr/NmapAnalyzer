@@ -99,43 +99,61 @@ class NmapScanner:
         self.logger.info(f"Аргументы Nmap: {self.nmap_args}")
     
     def run_nmap_scan(self, target):
-        """Выполнение сканирования Nmap"""
-        self.logger.info(f"Начинаю сканирование цели: {target}")
-        
-        # Имена файлов для результатов
-        xml_output = self.reports_dir / "scan_results.xml"
-        normal_output = self.reports_dir / "scan_results.txt"
-        
-        # Команда для выполнения сканирования
-        cmd = f"nmap {self.nmap_args} -oX {xml_output} -oN {normal_output} {target}"
-        
-        self.logger.info(f"Выполняю команду: {cmd}")
-        
-        try:
-            # Выполнение команды с захватом вывода
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding='utf-8'
-            )
+            """Выполнение сканирования Nmap"""
+            self.logger.info(f"Начинаю сканирование цели: {target}")
             
-            self.logger.info("Сканирование успешно завершено")
-            self.logger.info(f"STDOUT: {result.stdout[:500]}...")  # Первые 500 символов
-            if result.stderr:
-                self.logger.warning(f"STDERR: {result.stderr}")
+            # Имена файлов для результатов
+            xml_output = self.reports_dir / "scan_results.xml"
+            normal_output = self.reports_dir / "scan_results.txt"
             
-            return xml_output
+            # Команда для выполнения сканирования
+            cmd = f"nmap {self.nmap_args} -oX {xml_output} -oN {normal_output} {target}"
             
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Ошибка выполнения Nmap: {e}")
-            self.logger.error(f"Вывод ошибки: {e.stderr}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Непредвиденная ошибка: {e}")
-            return None
+            self.logger.info(f"Выполняю команду: {cmd}")
+            
+            # Добавим обработку KeyboardInterrupt в основном блоке
+            try:
+                # Выполнение команды с захватом вывода
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8'
+                )
+                
+                self.logger.info("Сканирование успешно завершено")
+                self.logger.info(f"STDOUT: {result.stdout[:500]}...")  # Первые 500 символов
+                if result.stderr:
+                    self.logger.warning(f"STDERR: {result.stderr}")
+                
+                return xml_output
+                
+            except KeyboardInterrupt:
+                # Пользователь прервал выполнение
+                self.logger.warning("Сканирование прервано пользователем")
+                print("\n⚠️  Сканирование прервано пользователем")
+                print("📁 Частичные результаты могут быть сохранены в:", self.output_dir)
+                
+                # Проверяем, создались ли файлы
+                if xml_output.exists():
+                    file_size = xml_output.stat().st_size
+                    if file_size > 100:  # Если файл не пустой
+                        self.logger.info(f"Частичные результаты сохранены ({file_size} байт)")
+                        print(f"✅ Найдены частичные результаты ({file_size} байт)")
+                        return xml_output
+                
+                print("❌ Результаты не найдены или файлы пустые")
+                return None
+            
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"Ошибка выполнения Nmap: {e}")
+                self.logger.error(f"Вывод ошибки: {e.stderr}")
+                return None
+            except Exception as e:
+                self.logger.error(f"Непредвиденная ошибка: {e}")
+                return None
     
     def parse_nmap_xml(self, xml_file):
         """Парсинг XML вывода Nmap"""
