@@ -85,3 +85,4 @@ sample_data/
 #Папка со старыми версиями скрипта
 old_version_py
 old_version_py/*
+log.txt
