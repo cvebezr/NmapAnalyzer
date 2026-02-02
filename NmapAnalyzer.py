@@ -133,13 +133,12 @@ class ProgressTracker:
 class NmapScanner:
     def __init__(self, output_dir, nmap_args=None):
         self.output_dir = Path(output_dir)
-        self.logs_dir = self.output_dir / "logs"
+        self.log_file = self.output_dir / "log.txt"  # Single log file
         self.reports_dir = self.output_dir / "reports"
         self.nmap_args = nmap_args if nmap_args else "-sV --top-ports 100"
 
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.logs_dir.mkdir(exist_ok=True)
         self.reports_dir.mkdir(exist_ok=True)
 
         # Setup logging
@@ -188,24 +187,25 @@ class NmapScanner:
 
     def setup_logging(self):
         """Setup logging system"""
-        timestamp = datetime.now().strftime("%H_%M_%S_%d_%m")
-        log_file = self.logs_dir / f"{timestamp}.txt"
-
-        # Logger for console and file output
+        # Create logger for console and file output
         self.logger = logging.getLogger('NmapScanner')
         self.logger.setLevel(logging.INFO)
 
         # Formatter
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-        # File handler
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        # File handler (single log.txt file)
+        file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
         file_handler.setFormatter(formatter)
 
         # Console handler
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
 
+        # Clear existing handlers
+        self.logger.handlers.clear()
+        
+        # Add handlers
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
 
@@ -308,8 +308,8 @@ class NmapScanner:
         print(f"   Estimated time: {estimated_time}")
         
         if total_seconds > 300:  # More than 5 minutes
-            print(f"   [!] This may take some time...")
-            print(f"   [!] Tip: Press Ctrl+C to interrupt")
+            print(f"   {Color.YELLOW}[!]{Color.RESET} This may take some time...")
+            print(f"   {Color.YELLOW}[!]{Color.RESET} Tip: Press Ctrl+C to interrupt")
         
         print()
 
@@ -398,9 +398,7 @@ class NmapScanner:
                         progress_tracker.update(line)
                         
                         # Show informative lines
-                        if any(keyword in line.lower() for keyword in 
-                               ['discovered', 'scanning', 'nmap scan report', 'port', 'service']):
-                            print(f"   {Color.CYAN}[i]{Color.RESET} {line.strip()}")
+                        pass
                             
                 except queue.Empty:
                     pass
@@ -426,10 +424,8 @@ class NmapScanner:
                 
                 # Save output to log
                 full_output = ''.join(lines_buffer)
-                if len(full_output) > 1000:
-                    self.logger.info(f"Nmap output (first 1000 chars): {full_output[:1000]}...")
-                else:
-                    self.logger.info(f"Nmap output: {full_output}")
+                if full_output:
+                    self.logger.info("Nmap scan output saved to log file")
                 
                 return xml_output
             else:
@@ -984,7 +980,7 @@ class NmapScanner:
         print(f"\nRESULTS SUMMARY")
         print('='*60)
         print(f"Results directory: {self.output_dir}")
-        print(f"Logs: {self.logs_dir}")
+        print(f"Log file: {self.log_file}")
         print(f"Reports: {self.reports_dir}")
         print(f"\nCreated files:")
         
@@ -1034,10 +1030,11 @@ For networks use --top-ports N or specific port ranges.
     if success:
         print(f"\n{Color.GREEN}[+]{Color.RESET} ALL OPERATIONS COMPLETED SUCCESSFULLY!")
         print(f"Results saved to: {args.directory}")
+        print(f"Log file: {args.directory}/log.txt")
         sys.exit(0)
     else:
         print(f"\n{Color.RED}[-]{Color.RESET} SCAN COMPLETED WITH ERRORS OR INTERRUPTED")
-        print(f"Check logs in: {args.directory}/logs/")
+        print(f"Check log file: {args.directory}/log.txt")
         sys.exit(1)
 
 if __name__ == "__main__":
