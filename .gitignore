@@ -81,3 +81,7 @@ sample_data/
 # Системные файлы
 .directory
 .trash-*
+
+#Папка со старыми версиями скрипта
+old_version_py
+old_version_py/*
