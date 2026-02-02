@@ -51,24 +51,24 @@ sudo chmod +x ./NmapAnalyzer.py
 ./NmapAnalyzer.py 192.0.0.0/8 -D report 
 ```
 
-### Legal Disclaimer
+## Legal Disclaimer
 
 **IMPORTANT: LEGAL AND ETHICAL USE ONLY**
 
-## Legal Compliance
+### Legal Compliance
 This tool is intended for **AUTHORIZED SECURITY TESTING ONLY**. You must:
 - Only scan networks you own or have explicit written permission to test
 - Comply with all applicable laws (CFAA, Computer Misuse Act, etc.)
 - Obtain proper authorization before any scanning activity
 
-## Prohibited Uses
+### Prohibited Uses
 **STRICTLY FORBIDDEN**:
 - Unauthorized network scanning
 - Testing systems without permission
 - Any illegal or malicious activities
 - Privacy violations
 
-## No Warranty & Liability
+### No Warranty & Liability
 **THE SOFTWARE IS PROVIDED "AS IS"**, WITHOUT WARRANTY OF ANY KIND. 
 
 **THE AUTHOR ASSUMES NO RESPONSIBILITY** for:
@@ -79,13 +79,13 @@ This tool is intended for **AUTHORIZED SECURITY TESTING ONLY**. You must:
 
 **YOU ARE SOLELY RESPONSIBLE** for ensuring your activities are legal and authorized.
 
-## Professional Recommendations
+### Professional Recommendations
 - Obtain proper certifications (CEH, OSCP, etc.)
 - Always have written authorization
 - Maintain documentation of testing activities
 - Follow established ethical guidelines
 
-## Reporting Security Issues
+### Reporting Security Issues
 Report vulnerabilities responsibly to appropriate parties, not publicly.
 
 **USE THIS TOOL RESPONSIBLY AND LEGALLY.**
