@@ -9,7 +9,7 @@
 
 ✅ **Automated Scanning** - One-command network scanning with custom Nmap arguments  
 ✅ **Smart Service Classification** - Automatic port categorization by service type  
-✅ **Multiple Report Formats** - Text, HTML, and XML outputs  
+✅ **Multiple Report Formats** - Text, HTML, MD and XML outputs  
 ✅ **Comprehensive Logging** - Detailed operation logs with timestamps  
 ✅ **Large Network Support** - Optimized for /16, /8 network scans  
 ✅ **Flexible Configuration** - Customizable scanning parameters  
@@ -18,7 +18,7 @@
 
 ## Quick Start
 
-### Hot to install
+### How to install
 ```bash
 #Clone from git
 git clone https://github.com/cvebezr/NmapAnalyzer
