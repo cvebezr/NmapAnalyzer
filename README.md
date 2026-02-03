@@ -24,7 +24,7 @@
 git clone https://github.com/cvebezr/NmapAnalyzer
 ```
 
-### Requiements
+### Requirements
 ```bash
 # Ubuntu/Debian
 sudo apt-get install nmap xsltproc python3
