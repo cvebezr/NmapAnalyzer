@@ -18,9 +18,10 @@ import shutil
 import time
 import threading
 import queue
+import ipaddress
 
 class Color:
-    """ANSI color codes for terminal output"""
+    """Colors"""
     GREEN = '\033[92m'
     RED = '\033[91m'
     YELLOW = '\033[93m'
@@ -29,6 +30,193 @@ class Color:
     MAGENTA = '\033[95m'
     BOLD = '\033[1m'
     RESET = '\033[0m'
+
+def validate_ip_address(ip_str):
+    """Validate IPv4 address format"""
+    pattern = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$')
+    match = pattern.match(ip_str)
+    if not match:
+        return False
+    
+    # Check each octet is between 0-255
+    for octet in match.groups():
+        if not (0 <= int(octet) <= 255):
+            return False
+    
+    return True
+
+def validate_ip_range(ip_range):
+    """Validate IP range format (e.g., 192.168.1.1-100)"""
+    if '-' not in ip_range:
+        return False
+    
+    # Check if it's a simple range like 192.168.1.1-100
+    if ip_range.count('.') == 3 and ip_range.count('-') == 1:
+        parts = ip_range.split('-')
+        if len(parts) != 2:
+            return False
+        
+        ip_part = parts[0]
+        range_part = parts[1]
+        
+        # Validate IP part
+        if not validate_ip_address(ip_part):
+            return False
+        
+        # Validate range part
+        try:
+            range_num = int(range_part)
+            if not (1 <= range_num <= 254):
+                return False
+        except ValueError:
+            return False
+        
+        return True
+    
+    # Check if it's a multi-range like 192.168.0-100.0-100
+    return validate_multi_range(ip_range)
+
+def validate_multi_range(multi_range):
+    """Validate multi-range format like 192.168.0-100.0-100"""
+    parts = multi_range.split('.')
+    if len(parts) != 4:
+        return False
+    
+    octet_pattern = re.compile(r'^(\d{1,3})(?:-(\d{1,3}))?$')
+    
+    for octet_str in parts:
+        match = octet_pattern.match(octet_str)
+        if not match:
+            return False
+        
+        start_str = match.group(1)
+        end_str = match.group(2)
+        
+        try:
+            start = int(start_str)
+            if not (0 <= start <= 255):
+                return False
+            
+            if end_str:
+                end = int(end_str)
+                if not (0 <= end <= 255):
+                    return False
+                if start > end:
+                    return False
+        except ValueError:
+            return False
+    
+    return True
+
+def expand_multi_range(multi_range):
+    """Expand multi-range like 192.168.0-100.0-100 to individual IPs"""
+    parts = multi_range.split('.')
+    expanded_ranges = []
+    
+    for part in parts:
+        if '-' in part:
+            start, end = map(int, part.split('-'))
+            expanded_ranges.append(list(range(start, end + 1)))
+        else:
+            expanded_ranges.append([int(part)])
+    
+    # Generate all combinations
+    from itertools import product
+    ips = []
+    for combination in product(*expanded_ranges):
+        ip = '.'.join(map(str, combination))
+        ips.append(ip)
+    
+    return ips
+
+def calculate_hosts_count(target, target_type):
+    """Calculate number of hosts for different target types"""
+    if target_type == "cidr":
+        parts = target.split('/')
+        mask = int(parts[1])
+        total_hosts = 2 ** (32 - mask)
+        if mask <= 30:
+            total_hosts -= 2
+        return total_hosts
+    
+    elif target_type == "ip_range":
+        parts = target.split('-')
+        ip_base = parts[0]
+        range_end = int(parts[1])
+        ip_parts = ip_base.split('.')
+        if len(ip_parts) == 4:
+            try:
+                start_octet = int(ip_parts[3])
+                total_hosts = range_end - start_octet + 1
+                return total_hosts if total_hosts > 0 else None
+            except ValueError:
+                return None
+        return None
+    
+    elif target_type == "multi_range":
+        try:
+            ips = expand_multi_range(target)
+            return len(ips)
+        except:
+            return None
+    
+    elif target_type in ["single_ip", "domain"]:
+        return 1
+    
+    return None
+
+def validate_cidr(cidr_str):
+    """Validate CIDR notation"""
+    if '/' not in cidr_str:
+        return False
+    
+    parts = cidr_str.split('/')
+    if len(parts) != 2:
+        return False
+    
+    ip_part = parts[0]
+    mask_part = parts[1]
+    
+    # Validate IP part
+    if not validate_ip_address(ip_part):
+        return False
+    
+    # Validate mask part
+    try:
+        mask = int(mask_part)
+        if not (0 <= mask <= 32):
+            return False
+    except ValueError:
+        return False
+    
+    return True
+
+def validate_target(target):
+    """Validate scan target"""
+    # Check if it's a domain name (basic check)
+    if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', target):
+        return True, "domain"
+    
+    # Check if it's a single IP
+    if validate_ip_address(target):
+        return True, "single_ip"
+    
+    # Check if it's an IP range (simple or multi)
+    if validate_ip_range(target):
+        # Determine type
+        if '-' in target and target.count('.') == 3 and target.count('-') == 1:
+            # Check if it's simple range
+            parts = target.split('-')
+            if '.' in parts[0] and not '.' in parts[1]:
+                return True, "ip_range"
+        # It's a multi-range
+        return True, "multi_range"
+    
+    # Check if it's CIDR notation
+    if validate_cidr(target):
+        return True, "cidr"
+    
+    return False, "invalid"
 
 class ProgressTracker:
     """Class for tracking scan progress"""
@@ -43,91 +231,135 @@ class ProgressTracker:
         self.scanned_hosts = 0
         self.is_network_scan = False
         self.lock = threading.Lock()
-        
+
     def start(self):
-        """Start progress tracking"""
+        """Start progress tracking with validation"""
         self.start_time = datetime.now()
         self.last_update = self.start_time
-        
+
         # Determine scan type
-        if '/' in self.target or '-' in self.target:
+        is_valid, target_type = validate_target(self.target)
+        
+        if not is_valid:
+            print(f"{Color.RED}[-]{Color.RESET} ERROR: Invalid target format '{self.target}'")
+            print(f"{Color.RED}[-]{Color.RESET} Expected: IP address, CIDR (e.g., 192.168.1.0/24),")
+            print(f"{Color.RED}[-]{Color.RESET}         IP range (e.g., 192.168.1.1-100),")
+            print(f"{Color.RED}[-]{Color.RESET}         Multi-range (e.g., 192.168.0-100.0-100),")
+            print(f"{Color.RED}[-]{Color.RESET}         or domain name")
+            sys.exit(1)
+
+        if target_type in ["cidr", "ip_range", "multi_range"]:
             self.is_network_scan = True
-            parts = self.target.split('/')
-            if len(parts) > 1:
-                # Try to determine number of hosts in network
-                try:
-                    cidr = int(parts[1])
-                    if cidr <= 32:
-                        self.total_hosts = 2 ** (32 - cidr)
-                        if cidr <= 30:  # Exclude network and broadcast addresses
-                            self.total_hosts -= 2
-                except:
-                    pass
+            
+            if target_type == "cidr":
+                parts = self.target.split('/')
+                ip_part = parts[0]
+                mask = int(parts[1])
+                
+                # Calculate number of hosts
+                self.total_hosts = calculate_hosts_count(self.target, target_type)
+                
+                print(f"{Color.GREEN}[+]{Color.RESET} Valid CIDR target: {self.target}")
+                print(f"{Color.CYAN}[i]{Color.RESET} Network: {ip_part}/{mask}")
+                print(f"{Color.CYAN}[i]{Color.RESET} Usable hosts: {self.total_hosts}")
+                
+            elif target_type == "ip_range":
+                print(f"{Color.GREEN}[+]{Color.RESET} Valid IP range target: {self.target}")
+                
+                # Calculate number of hosts
+                self.total_hosts = calculate_hosts_count(self.target, target_type)
+                if self.total_hosts:
+                    print(f"{Color.CYAN}[i]{Color.RESET} Hosts to scan: {self.total_hosts}")
+                else:
+                    self.total_hosts = None
+            
+            elif target_type == "multi_range":
+                print(f"{Color.GREEN}[+]{Color.RESET} Valid multi-range target: {self.target}")
+                
+                # Calculate number of hosts
+                self.total_hosts = calculate_hosts_count(self.target, target_type)
+                if self.total_hosts:
+                    print(f"{Color.CYAN}[i]{Color.RESET} Hosts to scan: {self.total_hosts}")
+                    
+                    # Warn if too many hosts
+                    if self.total_hosts > 1000:
+                        print(f"{Color.YELLOW}[!]{Color.RESET} Warning: Large target range ({self.total_hosts} hosts)")
+                        print(f"{Color.YELLOW}[!]{Color.RESET} Consider using CIDR notation or smaller ranges")
+                else:
+                    self.total_hosts = None
         
-        self.logger.info(f"Starting progress tracking for target: {self.target}")
+        elif target_type == "single_ip":
+            print(f"{Color.GREEN}[+]{Color.RESET} Valid single IP target: {self.target}")
+            self.total_hosts = 1
         
+        elif target_type == "domain":
+            print(f"{Color.GREEN}[+]{Color.RESET} Valid domain target: {self.target}")
+            self.total_hosts = 1
+
+        self.logger.info(f"Starting progress tracking for target: {self.target} (type: {target_type})")
+
     def update(self, line):
         """Update progress based on Nmap output line"""
         if not line:
             return
-            
+
         line_lower = line.lower()
-        
+
         with self.lock:
             # Determine current host
             host_match = re.search(r'scanning\s+(\d+\.\d+\.\d+\.\d+)', line_lower)
             if host_match:
                 self.current_host = host_match.group(1)
                 self.scanned_hosts += 1
-                
+
             # Determine current port
             port_match = re.search(r'(\d+)/\w+\s+port', line_lower)
             if port_match:
                 self.current_port = port_match.group(1)
-                
+
             # Detect host scan completion
             if 'nmap scan report' in line_lower:
                 self.scanned_hosts += 1
-                
+
     def get_progress(self):
         """Get current progress percentage"""
         if not self.total_hosts or self.total_hosts <= 0:
             return None
-            
+
         if self.scanned_hosts > self.total_hosts:
             return 100
-            
+
         progress = (self.scanned_hosts / self.total_hosts) * 100
         return min(100, progress)
-        
+
     def get_elapsed_time(self):
         """Get elapsed time"""
         if not self.start_time:
             return "00:00:00"
-            
+
         elapsed = datetime.now() - self.start_time
         hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
         minutes, seconds = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        
+
     def get_status_string(self):
         """Get status string"""
         status = []
-        
+
         if self.current_host:
             status.append(f"Host: {self.current_host}")
-            
+
         if self.current_port:
             status.append(f"Port: {self.current_port}")
-            
+
         if self.scanned_hosts > 0 and self.total_hosts:
             progress = self.get_progress()
             if progress is not None:
                 status.append(f"Progress: {progress:.1f}% ({self.scanned_hosts}/{self.total_hosts} hosts)")
-                
+
         elapsed = self.get_elapsed_time()
         status.append(f"Time: {elapsed}")
-        
+
         return " | ".join(status)
 
 class NmapScanner:
@@ -168,6 +400,7 @@ class NmapScanner:
             'docker': [2375, 2376],
             'kubernetes': [6443, 10250],
             'jenkins': [8080],
+            'snmp': [161, 162, 6000, 6012],
         }
 
         self.known_services = {
@@ -183,6 +416,10 @@ class NmapScanner:
             6379: 'Redis',
             27017: 'MongoDB',
             9200: 'Elasticsearch',
+            161: 'SNMP',
+            161: 'SNMPTRAP',
+            6000: 'SNMP',
+            6012: 'SNMPTRAP',
         }
 
     def setup_logging(self):
@@ -204,7 +441,7 @@ class NmapScanner:
 
         # Clear existing handlers
         self.logger.handlers.clear()
-        
+
         # Add handlers
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
@@ -212,12 +449,12 @@ class NmapScanner:
         self.logger.info(f"Scanner initialized. Directory: {self.output_dir}")
         self.logger.info(f"Nmap arguments: {self.nmap_args}")
 
-    def estimate_scan_time(self, target, nmap_args):
+    def estimate_scan_time(self, target, nmap_args, target_type):
         """Estimate scan time"""
         self.logger.info("Estimating scan time...")
-        
+
         estimated_time = "unknown"
-        
+
         # Determine number of ports
         if "-p-" in nmap_args or "--all-ports" in nmap_args:
             ports = 65535
@@ -244,38 +481,34 @@ class NmapScanner:
         else:
             ports = 1000
             port_info = "standard ports"
-        
+
         # Determine number of hosts
-        if '/' in target:
-            parts = target.split('/')
-            try:
-                cidr = int(parts[1])
-                hosts = 2 ** (32 - cidr)
-                if cidr <= 30:
-                    hosts -= 2
-                host_info = f"{hosts} hosts in network {target}"
-            except:
-                hosts = 100
-                host_info = f"network {target}"
-        elif '-' in target:
-            # IP range
-            hosts = 254  # Conservative estimate
-            host_info = f"range {target}"
-        else:
+        hosts = calculate_hosts_count(target, target_type)
+        if not hosts:
             hosts = 1
-            host_info = f"single host {target}"
         
+        if target_type == "cidr":
+            host_info = f"{hosts} hosts in network {target}"
+        elif target_type == "ip_range":
+            host_info = f"{hosts} hosts in range {target}"
+        elif target_type == "multi_range":
+            host_info = f"{hosts} hosts in multi-range {target}"
+        elif target_type == "domain":
+            host_info = f"domain {target}"
+        else:  # single_ip
+            host_info = f"single host {target}"
+
         # Time estimation (very approximate)
         # Base time per port: 0.1-1 second depending on scan type
         base_time_per_port = 0.5
-        
+
         if "-sS" in nmap_args:
             base_time_per_port = 0.1  # SYN scan is faster
         elif "-sT" in nmap_args:
             base_time_per_port = 0.3  # TCP connect is slower
         elif "-sU" in nmap_args:
             base_time_per_port = 2.0  # UDP scan is much slower
-        
+
         if "-T0" in nmap_args or "-T1" in nmap_args:
             base_time_per_port *= 5
         elif "-T2" in nmap_args:
@@ -284,9 +517,9 @@ class NmapScanner:
             base_time_per_port *= 1
         elif "-T4" in nmap_args or "-T5" in nmap_args:
             base_time_per_port *= 0.5
-        
+
         total_seconds = hosts * ports * base_time_per_port
-        
+
         if total_seconds < 60:
             estimated_time = f"~{int(total_seconds)} seconds"
         elif total_seconds < 3600:
@@ -298,46 +531,72 @@ class NmapScanner:
         else:
             days = total_seconds / 86400
             estimated_time = f"~{days:.1f} days"
-        
+
         self.logger.info(f"Estimation: {host_info}, {port_info}")
         self.logger.info(f"Estimated scan time: {estimated_time}")
-        
+
         print(f"\nScan Estimation:")
         print(f"   Target: {host_info}")
         print(f"   Ports: {port_info}")
         print(f"   Estimated time: {estimated_time}")
-        
+
         if total_seconds > 300:  # More than 5 minutes
             print(f"   {Color.YELLOW}[!]{Color.RESET} This may take some time...")
             print(f"   {Color.YELLOW}[!]{Color.RESET} Tip: Press Ctrl+C to interrupt")
-        
+
+        # Warn for very large scans
+        if hosts > 10000:
+            print(f"   {Color.YELLOW}[!]{Color.RESET} Warning: Very large range ({hosts} hosts)")
+            print(f"   {Color.YELLOW}[!]{Color.RESET} Consider breaking into smaller scans")
+            print(f"   {Color.YELLOW}[!]{Color.RESET} Or use fewer ports (e.g., --top-ports 10)")
+
         print()
 
-    def run_nmap_scan(self, target):
+    def run_nmap_scan(self, target, target_type):
         """Execute Nmap scan with progress display"""
         self.logger.info(f"Starting scan of target: {target}")
-        
+
+        # Validate target before scanning
+        is_valid, detected_type = validate_target(target)
+        if not is_valid:
+            print(f"{Color.RED}[-]{Color.RESET} ERROR: Invalid target format '{target}'")
+            print(f"{Color.RED}[-]{Color.RESET} Supported formats:")
+            print(f"{Color.RED}[-]{Color.RESET}   - Single IP: 192.168.1.1")
+            print(f"{Color.RED}[-]{Color.RESET}   - CIDR: 192.168.1.0/24")
+            print(f"{Color.RED}[-]{Color.RESET}   - IP range: 192.168.1.1-100")
+            print(f"{Color.RED}[-]{Color.RESET}   - Multi-range: 192.168.0-100.0-100")
+            print(f"{Color.RED}[-]{Color.RESET}   - Domain: example.com")
+            return None
+
+        print(f"{Color.GREEN}[+]{Color.RESET} Target validated: {target} ({target_type})")
+
+        # For multi-range targets, Nmap supports them natively
+        # but we need to handle them specially
+        if target_type == "multi_range":
+            print(f"{Color.CYAN}[i]{Color.RESET} Multi-range format detected")
+            print(f"{Color.CYAN}[i]{Color.RESET} Nmap will handle this format directly")
+
         # Estimate scan time
-        self.estimate_scan_time(target, self.nmap_args)
-        
+        self.estimate_scan_time(target, self.nmap_args, target_type)
+
         # Result file names
         xml_output = self.reports_dir / "scan_results.xml"
         normal_output = self.reports_dir / "scan_results.txt"
-        
+
         # Command to execute
         cmd = f"nmap {self.nmap_args} -oX {xml_output} -oN {normal_output} {target}"
-        
+
         self.logger.info(f"Executing command: {cmd}")
         print(f"\nStarting scan...")
         print(f"Command: {cmd}")
-        
+
         # Initialize progress tracker
         progress_tracker = ProgressTracker(target, self.logger)
         progress_tracker.start()
-        
+
         # Queue for output
         output_queue = queue.Queue()
-        
+
         def read_output(pipe, queue):
             """Read output from pipe in separate thread"""
             try:
@@ -347,7 +606,7 @@ class NmapScanner:
                 pipe.close()
             except:
                 pass
-        
+
         try:
             # Start process
             process = subprocess.Popen(
@@ -359,7 +618,7 @@ class NmapScanner:
                 bufsize=1,
                 universal_newlines=True
             )
-            
+
             # Start threads for reading output
             stdout_thread = threading.Thread(
                 target=read_output,
@@ -369,16 +628,16 @@ class NmapScanner:
                 target=read_output,
                 args=(process.stderr, output_queue)
             )
-            
+
             stdout_thread.daemon = True
             stderr_thread.daemon = True
             stdout_thread.start()
             stderr_thread.start()
-            
+
             # Collect output and display progress
             last_progress_update = time.time()
             lines_buffer = []
-            
+
             while True:
                 # Check if process completed
                 if process.poll() is not None:
@@ -389,20 +648,20 @@ class NmapScanner:
                             lines_buffer.append(line)
                             progress_tracker.update(line)
                     break
-                
+
                 # Read output
                 try:
                     line = output_queue.get(timeout=0.1)
                     if line:
                         lines_buffer.append(line)
                         progress_tracker.update(line)
-                        
+
                         # Show informative lines
                         pass
-                            
+
                 except queue.Empty:
                     pass
-                
+
                 # Update progress display every 0.5 seconds
                 current_time = time.time()
                 if current_time - last_progress_update > 0.5:
@@ -410,50 +669,50 @@ class NmapScanner:
                     if status:
                         print(f"\r{Color.BLUE}[*]{Color.RESET} {status}", end='', flush=True)
                     last_progress_update = current_time
-            
+
             # Wait for threads to complete
             stdout_thread.join(timeout=1)
             stderr_thread.join(timeout=1)
-            
+
             # Get return code
             return_code = process.wait()
-            
+
             if return_code == 0:
                 print(f"\n{Color.GREEN}[+]{Color.RESET} Scan completed successfully!")
                 self.logger.info("Scan completed successfully")
-                
+
                 # Save output to log
                 full_output = ''.join(lines_buffer)
                 if full_output:
                     self.logger.info("Nmap scan output saved to log file")
-                
+
                 return xml_output
             else:
                 print(f"\n{Color.RED}[-]{Color.RESET} Nmap exited with error (code: {return_code})")
                 self.logger.error(f"Nmap exited with error code: {return_code}")
-                
+
                 # Show errors
                 error_lines = [line for line in lines_buffer if 'error' in line.lower()]
                 for error_line in error_lines[:5]:  # First 5 errors
                     print(f"   {Color.RED}[-]{Color.RESET} {error_line.strip()}")
-                
+
                 return None
-                
+
         except KeyboardInterrupt:
             print(f"\n\n{Color.YELLOW}[!]{Color.RESET} Interrupt signal received (Ctrl+C)")
             self.logger.warning("Scan interrupted by user")
-            
+
             if 'process' in locals():
                 print(f"   {Color.YELLOW}[!]{Color.RESET} Stopping scan...")
                 process.terminate()
-                
+
                 try:
                     process.wait(timeout=5)
                     print(f"   {Color.GREEN}[+]{Color.RESET} Scan stopped")
                 except subprocess.TimeoutExpired:
                     process.kill()
                     print(f"   {Color.YELLOW}[!]{Color.RESET} Process force terminated")
-            
+
             # Check if files were created
             if xml_output.exists():
                 file_size = xml_output.stat().st_size
@@ -461,10 +720,10 @@ class NmapScanner:
                     print(f"   {Color.GREEN}[+]{Color.RESET} Partial results saved ({file_size} bytes)")
                     self.logger.info(f"Partial results saved ({file_size} bytes)")
                     return xml_output
-            
+
             print(f"   {Color.RED}[-]{Color.RESET} Results not found or files are empty")
             return None
-            
+
         except Exception as e:
             print(f"\n{Color.RED}[-]{Color.RESET} Unexpected error: {e}")
             self.logger.error(f"Unexpected error during scan: {e}")
@@ -489,7 +748,7 @@ class NmapScanner:
                 host_info = self.parse_host(host)
                 if host_info:
                     hosts_data.append(host_info)
-                
+
                 processed += 1
                 progress = (processed / total_hosts) * 100 if total_hosts > 0 else 0
                 print(f"\r   {Color.BLUE}[*]{Color.RESET} Processed hosts: {processed}/{total_hosts} ({progress:.1f}%)", end='', flush=True)
@@ -528,14 +787,13 @@ class NmapScanner:
             if ports_element is not None:
                 total_ports = len(ports_element.findall('port'))
                 processed_ports = 0
-                
+
                 for port_element in ports_element.findall('port'):
                     port_info = self.parse_port(port_element)
                     if port_info:
                         ports_data.append(port_info)
-                    
+
                     processed_ports += 1
-                    # Silent progress for each host
 
             return {
                 'ip': ip_address,
@@ -613,7 +871,7 @@ class NmapScanner:
                     'product': port_info['product'],
                     'version': port_info['version']
                 })
-                
+
                 processed_ports += 1
                 progress = (processed_ports / total_ports) * 100 if total_ports > 0 else 0
                 print(f"\r   {Color.BLUE}[*]{Color.RESET} Classifying ports: {processed_ports}/{total_ports} ({progress:.1f}%)", end='', flush=True)
@@ -623,7 +881,7 @@ class NmapScanner:
         # Create files for each category
         categories = list(service_groups.keys())
         total_categories = len(categories)
-        
+
         for i, category in enumerate(categories):
             hosts = service_groups[category]
             if hosts:
@@ -684,6 +942,8 @@ class NmapScanner:
             return 'vnc'
         elif 'smb' in service_name_lower or 'samba' in service_name_lower:
             return 'smb'
+        elif 'snmp' in service_name_lower or 'snmptrap' in service_name_lower:
+            return 'snmp'
 
         # If category not determined
         return 'other'
@@ -691,7 +951,7 @@ class NmapScanner:
     def create_summary_file(self, hosts_data):
         """Create general file with results"""
         summary_file = self.reports_dir / "all_open_ports.txt"
-        
+
         print(f"   {Color.BLUE}[*]{Color.RESET} Creating general report...")
 
         with open(summary_file, 'w', encoding='utf-8') as f:
@@ -724,7 +984,7 @@ class NmapScanner:
                     f.write("  No open ports\n")
 
                 f.write("\n")
-                
+
                 # Writing progress
                 progress = ((i + 1) / total_hosts) * 100 if total_hosts > 0 else 0
                 print(f"\r   {Color.BLUE}[*]{Color.RESET} Writing report: {i+1}/{total_hosts} hosts ({progress:.1f}%)", end='', flush=True)
@@ -768,20 +1028,20 @@ class NmapScanner:
         try:
             # Use xsltproc to convert XML to HTML
             cmd = f"xsltproc -o {html_output} {xslt_file} {xml_file}"
-            
+
             print(f"   {Color.BLUE}[*]{Color.RESET} Converting XML to HTML...")
             self.logger.info(f"Executing conversion: {cmd}")
-            
+
             # Show conversion progress
             start_time = time.time()
             result = subprocess.run(
-                cmd, 
-                shell=True, 
-                check=True, 
-                capture_output=True, 
+                cmd,
+                shell=True,
+                check=True,
+                capture_output=True,
                 text=True
             )
-            
+
             elapsed = time.time() - start_time
             print(f"   {Color.GREEN}[+]{Color.RESET} HTML report created in {elapsed:.1f} seconds")
             self.logger.info("HTML report successfully created")
@@ -808,7 +1068,7 @@ class NmapScanner:
 
         html_output = self.reports_dir / "scan_report_simple.html"
         hosts_data = self.parse_nmap_xml(xml_file)
-        
+
         if not hosts_data:
             print(f"   {Color.RED}[-]{Color.RESET} No data for report")
             return
@@ -849,7 +1109,7 @@ class NmapScanner:
         # Add statistics
         total_hosts = len(hosts_data)
         total_ports = sum(len(host['ports']) for host in hosts_data)
-        
+
         # Count by categories
         categories = {}
         for host in hosts_data:
@@ -860,7 +1120,7 @@ class NmapScanner:
         html_content += f"""
             <p><strong>Total hosts:</strong> {total_hosts}</p>
             <p><strong>Total open ports:</strong> {total_ports}</p>"""
-        
+
         # Add category statistics
         if categories:
             html_content += "<p><strong>Service distribution:</strong></p><ul>"
@@ -929,10 +1189,10 @@ class NmapScanner:
         print(f"   {Color.GREEN}[+]{Color.RESET} Simple HTML report created")
         self.logger.info(f"Created simple HTML report: {html_output}")
 
-    def run(self, target):
+    def run(self, target, target_type):
         """Main method to start scan and analysis"""
         self.logger.info(f"Starting scan of target: {target}")
-        
+
         print(f"\n{'='*60}")
         print("STARTING NMAP SCAN")
         print('='*60)
@@ -942,7 +1202,7 @@ class NmapScanner:
         print('='*60)
 
         # Execute scan
-        xml_file = self.run_nmap_scan(target)
+        xml_file = self.run_nmap_scan(target, target_type)
 
         if not xml_file or not xml_file.exists():
             self.logger.error("Scan failed or XML file not created")
@@ -983,7 +1243,7 @@ class NmapScanner:
         print(f"Log file: {self.log_file}")
         print(f"Reports: {self.reports_dir}")
         print(f"\nCreated files:")
-        
+
         files = list(self.reports_dir.iterdir())
         if files:
             for i, file in enumerate(files, 1):
@@ -992,7 +1252,7 @@ class NmapScanner:
                     print(f"   {i:2d}. {file.name:30} ({size_kb:.1f} KB)")
         else:
             print(f"   {Color.RED}[-]{Color.RESET} No files found")
-        
+
         print(f"\nTip: Open {self.reports_dir}/scan_report.html in browser")
         print(f"     to view results in convenient format")
         print('='*60)
@@ -1006,13 +1266,15 @@ Usage examples:
   %(prog)s 192.168.1.1 -D scan_results
   %(prog)s 192.168.0.0/24 -D network_scan -n "-sS -sV -p 1-1000"
   %(prog)s scanme.nmap.org -D internet_scan -n "-sC -sV --top-ports 1000"
+  %(prog)s 192.168.1.1-100 -D range_scan -n "-sS -sV"
+  %(prog)s 192.168.0-100.0-100 -D multi_range_scan -n "-sS -sV --top-ports 50"
 
 IMPORTANT: Use -p- (all ports) only for single hosts.
 For networks use --top-ports N or specific port ranges.
         """
     )
 
-    parser.add_argument('target', help='Scan target (IP, range or domain)')
+    parser.add_argument('target', help='Scan target (IP, CIDR, IP range, multi-range or domain)')
     parser.add_argument('-D', '--directory', required=True,
                        help='Directory name to save results')
     parser.add_argument('-n', '--nmap-args',
@@ -1021,11 +1283,51 @@ For networks use --top-ports N or specific port ranges.
 
     args = parser.parse_args()
 
+    # Validate target before creating scanner
+    is_valid, target_type = validate_target(args.target)
+    if not is_valid:
+        print(f"{Color.RED}[-]{Color.RESET} ERROR: Invalid target format '{args.target}'")
+        print(f"{Color.RED}[-]{Color.RESET} Supported formats:")
+        print(f"{Color.RED}[-]{Color.RESET}   - Single IP: 192.168.1.1")
+        print(f"{Color.RED}[-]{Color.RESET}   - CIDR: 192.168.1.0/24")
+        print(f"{Color.RED}[-]{Color.RESET}   - IP range: 192.168.1.1-100")
+        print(f"{Color.RED}[-]{Color.RESET}   - Multi-range: 192.168.0-100.0-100")
+        print(f"{Color.RED}[-]{Color.RESET}   - Domain: example.com")
+        sys.exit(1)
+
+    print(f"{Color.GREEN}[+]{Color.RESET} Target validated: {args.target} ({target_type})")
+
+    # Calculate number of hosts for large scans warning
+    hosts_count = calculate_hosts_count(args.target, target_type)
+    
+    # Warn for large scans and ask for confirmation
+    if hosts_count and hosts_count > 10000:
+        print(f"\n{Color.YELLOW}[!]{Color.RESET} WARNING: LARGE SCAN DETECTED")
+        print(f"{Color.YELLOW}[!]{Color.RESET} Target: {args.target}")
+        print(f"{Color.YELLOW}[!]{Color.RESET} Estimated hosts: {hosts_count}")
+        print(f"{Color.YELLOW}[!]{Color.RESET} This scan may take a VERY long time")
+        print(f"{Color.YELLOW}[!]{Color.RESET} Consider using smaller ranges or fewer ports")
+        
+        # Ask for confirmation
+        response = input(f"\n{Color.YELLOW}[?]{Color.RESET} Continue with scan? (y/N): ").strip().lower()
+        if response not in ['y', 'yes']:
+            print(f"\n{Color.YELLOW}[!]{Color.RESET} Scan cancelled by user")
+            sys.exit(0)
+        
+        # Double check for extremely large scans
+        if hosts_count > 50000:
+            print(f"\n{Color.RED}[!]{Color.RESET} EXTREME WARNING: {hosts_count} HOSTS")
+            print(f"{Color.RED}[!]{Color.RESET} This scan could take days or weeks!")
+            response2 = input(f"\n{Color.RED}[?]{Color.RESET} Are you REALLY sure? (yes/NO): ").strip().lower()
+            if response2 != 'yes':
+                print(f"\n{Color.YELLOW}[!]{Color.RESET} Scan cancelled")
+                sys.exit(0)
+
     # Create scanner instance
     scanner = NmapScanner(args.directory, args.nmap_args)
 
     # Start scan
-    success = scanner.run(args.target)
+    success = scanner.run(args.target, target_type)
 
     if success:
         print(f"\n{Color.GREEN}[+]{Color.RESET} ALL OPERATIONS COMPLETED SUCCESSFULLY!")
