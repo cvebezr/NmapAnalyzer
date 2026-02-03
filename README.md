@@ -48,7 +48,10 @@ sudo chmod +x ./NmapAnalyzer.py
 #Scanning /24, /16, /8 networks
 ./NmapAnalyzer.py 192.168.1.0/24 -D report
 ./NmapAnalyzer.py 192.168.0.0/16 -D report 
-./NmapAnalyzer.py 192.0.0.0/8 -D report 
+./NmapAnalyzer.py 192.0.0.0/8 -D report
+
+#Scanning multiple networks
+./NmapAnalyzer.py 192.168-255.0-255.0-255 -D report
 ```
 
 ## Legal Disclaimer
