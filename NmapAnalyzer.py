@@ -18,7 +18,8 @@ import shutil
 import time
 import threading
 import queue
-import ipaddress
+import concurrent.futures
+import json
 
 class Color:
     """Colors"""
@@ -31,6 +32,87 @@ class Color:
     BOLD = '\033[1m'
     RESET = '\033[0m'
 
+def print_banner():
+    """Print NmapAnalyzer banner"""
+    banner = f"""
+╔══════════════════════════════════════════╗ 
+║                                          ║   
+║  ███╗   ██╗███╗   ███╗ █████╗ ██████╗    ║  
+║  ████╗  ██║████╗ ████║██╔══██╗██╔══██╗   ║ 
+║  ██╔██╗ ██║██╔████╔██║███████║██████╔╝   ║
+║  ██║╚██╗██║██║╚██╔╝██║██╔══██║██╔═══╝    ║
+║  ██║ ╚████║██║ ╚═╝ ██║██║  ██║██║        ║
+║   ╔═╗ ╦  ╦ ╔═╗ ╦  ╦ ╦ ╔═╗ ╔═╗ ╦═╗        ║
+║   ╠═╣ ║╲╲║ ╠═╣ ║  \\ /  /  ║╣  ╠╦╝        ║
+║   ╩ ╩ ╩  ╩ ╩ ╩ ╩═╝ ╩  ╚═╝ ╚═╝ ╩╚═        ║
+╚══════════════════════════════════════════╝
+BY CVEBEZR
+"""
+    print(banner)
+
+class ScanProfiles:
+    """Predefined scan profiles"""
+    PROFILES = {
+        'quick': {
+            'args': '-sS -T4 --top-ports 20',
+            'description': 'Quick SYN scan of top 20 ports',
+            'time': 'Fast',
+            'stealth': 'High'
+        },
+        'standart': {
+            'args': '-sS -sV -T4 --top-ports 100',
+            'description': 'Standart SYN scan with version detection',
+            'time': 'Medium',
+            'stealth': 'Medium'
+        },
+        'full': {
+            'args': '-sS -sV -sC -T4 -A',
+            'description': 'Full scan with scripts and OS detection',
+            'time': 'Slow',
+            'stealth': 'Low'
+        },
+        'udp': {
+            'args': '-sU -T4 --top-ports 20',
+            'description': 'UDP scan of top 20 ports',
+            'time': 'Very Slow',
+            'stealth': 'Medium'
+        },
+        'stealth': {
+            'args': '-sS -T2 -f --top-ports 50',
+            'description': 'Stealth scan with fragmentation',
+            'time': 'Slow',
+            'stealth': 'Very High'
+        },
+        'comprehensive': {
+            'args': '-sS -sV -sC -A -p-',
+            'description': 'Comprehensive all-port scan',
+            'time': 'Very Slow',
+            'stealth': 'Very Low'
+        }
+    }
+
+    @classmethod
+    def get_profile(cls, profile_name):
+        """Get profile by name"""
+        return cls.PROFILES.get(profile_name, cls.PROFILES['standart'])
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available profiles"""
+        return list(cls.PROFILES.keys())
+
+    @classmethod
+    def get_profile_info(cls, profile_name):
+        """Get detailed profile information"""
+        profile = cls.get_profile(profile_name)
+        return f"""
+Profile: {profile_name}
+Arguments: {profile['args']}
+Description: {profile['description']}
+Estimated Time: {profile['time']}
+Stealth Level: {profile['stealth']}
+        """
+
 def validate_ip_address(ip_str):
     """Validate IPv4 address format"""
     pattern = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$')
@@ -38,7 +120,6 @@ def validate_ip_address(ip_str):
     if not match:
         return False
     
-    # Check each octet is between 0-255
     for octet in match.groups():
         if not (0 <= int(octet) <= 255):
             return False
@@ -46,11 +127,10 @@ def validate_ip_address(ip_str):
     return True
 
 def validate_ip_range(ip_range):
-    """Validate IP range format (e.g., 192.168.1.1-100)"""
+    """Validate IP range format"""
     if '-' not in ip_range:
         return False
     
-    # Check if it's a simple range like 192.168.1.1-100
     if ip_range.count('.') == 3 and ip_range.count('-') == 1:
         parts = ip_range.split('-')
         if len(parts) != 2:
@@ -59,11 +139,9 @@ def validate_ip_range(ip_range):
         ip_part = parts[0]
         range_part = parts[1]
         
-        # Validate IP part
         if not validate_ip_address(ip_part):
             return False
         
-        # Validate range part
         try:
             range_num = int(range_part)
             if not (1 <= range_num <= 254):
@@ -73,11 +151,10 @@ def validate_ip_range(ip_range):
         
         return True
     
-    # Check if it's a multi-range like 192.168.0-100.0-100
     return validate_multi_range(ip_range)
 
 def validate_multi_range(multi_range):
-    """Validate multi-range format like 192.168.0-100.0-100"""
+    """Validate multi-range format"""
     parts = multi_range.split('.')
     if len(parts) != 4:
         return False
@@ -109,7 +186,7 @@ def validate_multi_range(multi_range):
     return True
 
 def expand_multi_range(multi_range):
-    """Expand multi-range like 192.168.0-100.0-100 to individual IPs"""
+    """Expand multi-range to individual IPs"""
     parts = multi_range.split('.')
     expanded_ranges = []
     
@@ -120,7 +197,6 @@ def expand_multi_range(multi_range):
         else:
             expanded_ranges.append([int(part)])
     
-    # Generate all combinations
     from itertools import product
     ips = []
     for combination in product(*expanded_ranges):
@@ -130,7 +206,7 @@ def expand_multi_range(multi_range):
     return ips
 
 def calculate_hosts_count(target, target_type):
-    """Calculate number of hosts for different target types"""
+    """Calculate number of hosts"""
     if target_type == "cidr":
         parts = target.split('/')
         mask = int(parts[1])
@@ -177,11 +253,9 @@ def validate_cidr(cidr_str):
     ip_part = parts[0]
     mask_part = parts[1]
     
-    # Validate IP part
     if not validate_ip_address(ip_part):
         return False
     
-    # Validate mask part
     try:
         mask = int(mask_part)
         if not (0 <= mask <= 32):
@@ -193,26 +267,19 @@ def validate_cidr(cidr_str):
 
 def validate_target(target):
     """Validate scan target"""
-    # Check if it's a domain name (basic check)
     if re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', target):
         return True, "domain"
     
-    # Check if it's a single IP
     if validate_ip_address(target):
         return True, "single_ip"
     
-    # Check if it's an IP range (simple or multi)
     if validate_ip_range(target):
-        # Determine type
         if '-' in target and target.count('.') == 3 and target.count('-') == 1:
-            # Check if it's simple range
             parts = target.split('-')
             if '.' in parts[0] and not '.' in parts[1]:
                 return True, "ip_range"
-        # It's a multi-range
         return True, "multi_range"
     
-    # Check if it's CIDR notation
     if validate_cidr(target):
         return True, "cidr"
     
@@ -233,91 +300,41 @@ class ProgressTracker:
         self.lock = threading.Lock()
 
     def start(self):
-        """Start progress tracking with validation"""
+        """Start progress tracking"""
         self.start_time = datetime.now()
         self.last_update = self.start_time
 
-        # Determine scan type
         is_valid, target_type = validate_target(self.target)
         
         if not is_valid:
             print(f"{Color.RED}[-]{Color.RESET} ERROR: Invalid target format '{self.target}'")
-            print(f"{Color.RED}[-]{Color.RESET} Expected: IP address, CIDR (e.g., 192.168.1.0/24),")
-            print(f"{Color.RED}[-]{Color.RESET}         IP range (e.g., 192.168.1.1-100),")
-            print(f"{Color.RED}[-]{Color.RESET}         Multi-range (e.g., 192.168.0-100.0-100),")
-            print(f"{Color.RED}[-]{Color.RESET}         or domain name")
             sys.exit(1)
 
         if target_type in ["cidr", "ip_range", "multi_range"]:
             self.is_network_scan = True
-            
-            if target_type == "cidr":
-                parts = self.target.split('/')
-                ip_part = parts[0]
-                mask = int(parts[1])
-                
-                # Calculate number of hosts
-                self.total_hosts = calculate_hosts_count(self.target, target_type)
-                
-                print(f"{Color.GREEN}[+]{Color.RESET} Valid CIDR target: {self.target}")
-                print(f"{Color.CYAN}[i]{Color.RESET} Network: {ip_part}/{mask}")
-                print(f"{Color.CYAN}[i]{Color.RESET} Usable hosts: {self.total_hosts}")
-                
-            elif target_type == "ip_range":
-                print(f"{Color.GREEN}[+]{Color.RESET} Valid IP range target: {self.target}")
-                
-                # Calculate number of hosts
-                self.total_hosts = calculate_hosts_count(self.target, target_type)
-                if self.total_hosts:
-                    print(f"{Color.CYAN}[i]{Color.RESET} Hosts to scan: {self.total_hosts}")
-                else:
-                    self.total_hosts = None
-            
-            elif target_type == "multi_range":
-                print(f"{Color.GREEN}[+]{Color.RESET} Valid multi-range target: {self.target}")
-                
-                # Calculate number of hosts
-                self.total_hosts = calculate_hosts_count(self.target, target_type)
-                if self.total_hosts:
-                    print(f"{Color.CYAN}[i]{Color.RESET} Hosts to scan: {self.total_hosts}")
-                    
-                    # Warn if too many hosts
-                    if self.total_hosts > 1000:
-                        print(f"{Color.YELLOW}[!]{Color.RESET} Warning: Large target range ({self.total_hosts} hosts)")
-                        print(f"{Color.YELLOW}[!]{Color.RESET} Consider using CIDR notation or smaller ranges")
-                else:
-                    self.total_hosts = None
-        
-        elif target_type == "single_ip":
-            print(f"{Color.GREEN}[+]{Color.RESET} Valid single IP target: {self.target}")
-            self.total_hosts = 1
-        
-        elif target_type == "domain":
-            print(f"{Color.GREEN}[+]{Color.RESET} Valid domain target: {self.target}")
+            self.total_hosts = calculate_hosts_count(self.target, target_type)
+        elif target_type in ["single_ip", "domain"]:
             self.total_hosts = 1
 
-        self.logger.info(f"Starting progress tracking for target: {self.target} (type: {target_type})")
+        self.logger.info(f"Starting progress tracking for target: {self.target}")
 
     def update(self, line):
-        """Update progress based on Nmap output line"""
+        """Update progress based on Nmap output"""
         if not line:
             return
 
         line_lower = line.lower()
 
         with self.lock:
-            # Determine current host
             host_match = re.search(r'scanning\s+(\d+\.\d+\.\d+\.\d+)', line_lower)
             if host_match:
                 self.current_host = host_match.group(1)
                 self.scanned_hosts += 1
 
-            # Determine current port
             port_match = re.search(r'(\d+)/\w+\s+port', line_lower)
             if port_match:
                 self.current_port = port_match.group(1)
 
-            # Detect host scan completion
             if 'nmap scan report' in line_lower:
                 self.scanned_hosts += 1
 
@@ -342,6 +359,12 @@ class ProgressTracker:
         minutes, seconds = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
+    def get_elapsed_seconds(self):
+        """Get elapsed time in seconds"""
+        if not self.start_time:
+            return 0
+        return (datetime.now() - self.start_time).total_seconds()
+
     def get_status_string(self):
         """Get status string"""
         status = []
@@ -355,28 +378,184 @@ class ProgressTracker:
         if self.scanned_hosts > 0 and self.total_hosts:
             progress = self.get_progress()
             if progress is not None:
-                status.append(f"Progress: {progress:.1f}% ({self.scanned_hosts}/{self.total_hosts} hosts)")
+                status.append(f"Progress: {progress:.1f}% ({self.scanned_hosts}/{self.total_hosts})")
 
         elapsed = self.get_elapsed_time()
         status.append(f"Time: {elapsed}")
 
         return " | ".join(status)
 
+class ParallelScanner:
+    """Parallel scanning manager"""
+    
+    def __init__(self, scanner_instance, max_workers=4):
+        self.scanner = scanner_instance
+        self.max_workers = max_workers
+        self.results = []
+        
+    def split_target(self, target, target_type):
+        """Split target into smaller chunks for parallel scanning"""
+        chunks = []
+        
+        if target_type == "cidr":
+            parts = target.split('/')
+            base_ip = parts[0]
+            mask = int(parts[1])
+            
+            if mask <= 24:
+                new_mask = 24
+                networks = 2 ** (24 - mask) if mask < 24 else 1
+                for i in range(networks):
+                    network_ip = f"{base_ip.rsplit('.', 1)[0]}.{i}"
+                    chunks.append(f"{network_ip}.0/{new_mask}")
+        
+        elif target_type == "multi_range":
+            ips = expand_multi_range(target)
+            chunk_size = max(1, len(ips) // self.max_workers)
+            
+            for i in range(0, len(ips), chunk_size):
+                chunk_ips = ips[i:i + chunk_size]
+                if chunk_ips:
+                    chunks.append(f"{chunk_ips[0]}-{chunk_ips[-1].split('.')[-1]}")
+        
+        elif target_type == "ip_range":
+            parts = target.split('-')
+            ip_base = parts[0]
+            range_end = int(parts[1])
+            ip_parts = ip_base.split('.')
+            
+            if len(ip_parts) == 4:
+                start = int(ip_parts[3])
+                total = range_end - start + 1
+                chunk_size = max(1, total // self.max_workers)
+                
+                for i in range(start, range_end + 1, chunk_size):
+                    end = min(i + chunk_size - 1, range_end)
+                    chunks.append(f"{ip_base.rsplit('.', 1)[0]}.{i}-{end}")
+        
+        if not chunks:
+            chunks = [target]
+            
+        return chunks
+    
+    def scan_chunk(self, chunk_target):
+        """Scan a single chunk"""
+        try:
+            import tempfile
+            import uuid
+            temp_dir = Path(tempfile.gettempdir()) / f"nmap_chunk_{uuid.uuid4().hex[:8]}"
+            temp_dir.mkdir(exist_ok=True)
+            
+            chunk_scanner = NmapScanner(str(temp_dir), self.scanner.nmap_args)
+            
+            xml_file = chunk_scanner.run_nmap_scan(chunk_target, "chunk")
+            
+            if xml_file and xml_file.exists():
+                hosts_data = chunk_scanner.parse_nmap_xml(xml_file)
+                
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+                return {
+                    'target': chunk_target,
+                    'hosts': hosts_data,
+                    'success': True
+                }
+            else:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return {
+                    'target': chunk_target,
+                    'hosts': [],
+                    'success': False,
+                    'error': 'Scan failed'
+                }
+                
+        except Exception as e:
+            return {
+                'target': chunk_target,
+                'hosts': [],
+                'success': False,
+                'error': str(e)
+            }
+    
+    def parallel_scan(self, target, target_type):
+        """Execute parallel scan"""
+        print(f"{Color.CYAN}[i]{Color.RESET} Setting up parallel scan ({self.max_workers} workers)...")
+        
+        chunks = self.split_target(target, target_type)
+        
+        if len(chunks) == 1:
+            print(f"{Color.YELLOW}[!]{Color.RESET} Cannot parallelize this target. Running single scan.")
+            return None
+        
+        print(f"{Color.CYAN}[i]{Color.RESET} Split into {len(chunks)} chunks")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_chunk = {
+                executor.submit(self.scan_chunk, chunk): chunk 
+                for chunk in chunks
+            }
+            
+            results = []
+            completed = 0
+            total = len(chunks)
+            
+            for future in concurrent.futures.as_completed(future_to_chunk):
+                chunk = future_to_chunk[future]
+                completed += 1
+                
+                try:
+                    result = future.result()
+                    results.append(result)
+                    
+                    if result['success']:
+                        print(f"{Color.GREEN}[+]{Color.RESET} Chunk '{chunk}' completed ({completed}/{total})")
+                        print(f"   Found {len(result['hosts'])} hosts")
+                    else:
+                        print(f"{Color.RED}[-]{Color.RESET} Chunk '{chunk}' failed: {result.get('error', 'Unknown error')}")
+                        
+                except Exception as e:
+                    print(f"{Color.RED}[-]{Color.RESET} Chunk '{chunk}' error: {e}")
+                    results.append({
+                        'target': chunk,
+                        'hosts': [],
+                        'success': False,
+                        'error': str(e)
+                    })
+        
+        all_hosts = []
+        successful_chunks = 0
+        
+        for result in results:
+            if result['success']:
+                all_hosts.extend(result['hosts'])
+                successful_chunks += 1
+        
+        print(f"\n{Color.CYAN}[i]{Color.RESET} Parallel scan completed")
+        print(f"   Successful chunks: {successful_chunks}/{len(chunks)}")
+        print(f"   Total hosts found: {len(all_hosts)}")
+        
+        return all_hosts
+
 class NmapScanner:
     def __init__(self, output_dir, nmap_args=None):
         self.output_dir = Path(output_dir)
-        self.log_file = self.output_dir / "log.txt"  # Single log file
+        self.log_file = self.output_dir / "log.txt"
         self.reports_dir = self.output_dir / "reports"
         self.nmap_args = nmap_args if nmap_args else "-sV --top-ports 100"
+        self.scan_start_time = None
+        self.scan_end_time = None
+        self.scan_stats = {
+            'total_hosts': 0,
+            'open_ports': 0,
+            'services_found': defaultdict(int),
+            'scan_duration': 0
+        }
 
-        # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.reports_dir.mkdir(exist_ok=True)
 
-        # Setup logging
         self.setup_logging()
 
-        # Dictionary for service-port mapping
         self.service_ports = {
             'web': [80, 443, 8080, 8443, 8000, 3000, 9000],
             'ftp': [20, 21],
@@ -384,11 +563,6 @@ class NmapScanner:
             'telnet': [23],
             'smtp': [25, 465, 587],
             'dns': [53],
-            'dhcp': [67, 68],
-            'tftp': [69],
-            'http-proxy': [3128, 8080, 8888],
-            'snmp': [161],
-            'ldap': [389, 636],
             'smb': [137, 138, 139, 445],
             'mysql': [3306],
             'postgresql': [5432],
@@ -397,52 +571,22 @@ class NmapScanner:
             'vnc': [5900, 5901],
             'redis': [6379],
             'elasticsearch': [9200, 9300],
-            'docker': [2375, 2376],
-            'kubernetes': [6443, 10250],
-            'jenkins': [8080],
-            'snmp': [161, 162, 6000, 6012],
-        }
-
-        self.known_services = {
-            80: 'HTTP',
-            443: 'HTTPS',
-            22: 'SSH',
-            21: 'FTP',
-            25: 'SMTP',
-            53: 'DNS',
-            3389: 'RDP',
-            3306: 'MySQL',
-            5432: 'PostgreSQL',
-            6379: 'Redis',
-            27017: 'MongoDB',
-            9200: 'Elasticsearch',
-            161: 'SNMP',
-            161: 'SNMPTRAP',
-            6000: 'SNMP',
-            6012: 'SNMPTRAP',
         }
 
     def setup_logging(self):
         """Setup logging system"""
-        # Create logger for console and file output
         self.logger = logging.getLogger('NmapScanner')
         self.logger.setLevel(logging.INFO)
 
-        # Formatter
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-        # File handler (single log.txt file)
         file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
         file_handler.setFormatter(formatter)
 
-        # Console handler
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
 
-        # Clear existing handlers
         self.logger.handlers.clear()
-
-        # Add handlers
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
 
@@ -454,67 +598,32 @@ class NmapScanner:
         self.logger.info("Estimating scan time...")
 
         estimated_time = "unknown"
+        hosts = calculate_hosts_count(target, target_type) or 1
 
-        # Determine number of ports
         if "-p-" in nmap_args or "--all-ports" in nmap_args:
             ports = 65535
             port_info = "all ports (65535)"
         elif "--top-ports" in nmap_args:
             match = re.search(r'--top-ports\s+(\d+)', nmap_args)
-            if match:
-                ports = int(match.group(1))
-                port_info = f"top {ports} ports"
-            else:
-                ports = 100
-                port_info = "top 100 ports"
-        elif "-p" in nmap_args:
-            # Try to parse port range
-            match = re.search(r'-p\s+([\d,\-\s]+)', nmap_args)
-            if match:
-                port_range = match.group(1)
-                # Simple estimation - count max port
-                ports = 1000  # Conservative estimate
-                port_info = f"specified ports ({port_range})"
-            else:
-                ports = 1000
-                port_info = "specified ports"
+            ports = int(match.group(1)) if match else 100
+            port_info = f"top {ports} ports"
         else:
             ports = 1000
-            port_info = "standard ports"
+            port_info = "standart ports"
 
-        # Determine number of hosts
-        hosts = calculate_hosts_count(target, target_type)
-        if not hosts:
-            hosts = 1
-        
-        if target_type == "cidr":
-            host_info = f"{hosts} hosts in network {target}"
-        elif target_type == "ip_range":
-            host_info = f"{hosts} hosts in range {target}"
-        elif target_type == "multi_range":
-            host_info = f"{hosts} hosts in multi-range {target}"
-        elif target_type == "domain":
-            host_info = f"domain {target}"
-        else:  # single_ip
-            host_info = f"single host {target}"
-
-        # Time estimation (very approximate)
-        # Base time per port: 0.1-1 second depending on scan type
         base_time_per_port = 0.5
 
         if "-sS" in nmap_args:
-            base_time_per_port = 0.1  # SYN scan is faster
+            base_time_per_port = 0.1
         elif "-sT" in nmap_args:
-            base_time_per_port = 0.3  # TCP connect is slower
+            base_time_per_port = 0.3
         elif "-sU" in nmap_args:
-            base_time_per_port = 2.0  # UDP scan is much slower
+            base_time_per_port = 2.0
 
         if "-T0" in nmap_args or "-T1" in nmap_args:
             base_time_per_port *= 5
         elif "-T2" in nmap_args:
             base_time_per_port *= 2
-        elif "-T3" in nmap_args:
-            base_time_per_port *= 1
         elif "-T4" in nmap_args or "-T5" in nmap_args:
             base_time_per_port *= 0.5
 
@@ -523,82 +632,51 @@ class NmapScanner:
         if total_seconds < 60:
             estimated_time = f"~{int(total_seconds)} seconds"
         elif total_seconds < 3600:
-            minutes = total_seconds / 60
-            estimated_time = f"~{minutes:.1f} minutes"
+            estimated_time = f"~{total_seconds/60:.1f} minutes"
         elif total_seconds < 86400:
-            hours = total_seconds / 3600
-            estimated_time = f"~{hours:.1f} hours"
+            estimated_time = f"~{total_seconds/3600:.1f} hours"
         else:
-            days = total_seconds / 86400
-            estimated_time = f"~{days:.1f} days"
-
-        self.logger.info(f"Estimation: {host_info}, {port_info}")
-        self.logger.info(f"Estimated scan time: {estimated_time}")
+            estimated_time = f"~{total_seconds/86400:.1f} days"
 
         print(f"\nScan Estimation:")
-        print(f"   Target: {host_info}")
+        print(f"   Hosts: {hosts}")
         print(f"   Ports: {port_info}")
         print(f"   Estimated time: {estimated_time}")
 
-        if total_seconds > 300:  # More than 5 minutes
+        if total_seconds > 300:
             print(f"   {Color.YELLOW}[!]{Color.RESET} This may take some time...")
-            print(f"   {Color.YELLOW}[!]{Color.RESET} Tip: Press Ctrl+C to interrupt")
-
-        # Warn for very large scans
-        if hosts > 10000:
-            print(f"   {Color.YELLOW}[!]{Color.RESET} Warning: Very large range ({hosts} hosts)")
-            print(f"   {Color.YELLOW}[!]{Color.RESET} Consider breaking into smaller scans")
-            print(f"   {Color.YELLOW}[!]{Color.RESET} Or use fewer ports (e.g., --top-ports 10)")
 
         print()
+        return total_seconds
 
     def run_nmap_scan(self, target, target_type):
         """Execute Nmap scan with progress display"""
+        self.scan_start_time = datetime.now()
         self.logger.info(f"Starting scan of target: {target}")
 
-        # Validate target before scanning
         is_valid, detected_type = validate_target(target)
         if not is_valid:
-            print(f"{Color.RED}[-]{Color.RESET} ERROR: Invalid target format '{target}'")
-            print(f"{Color.RED}[-]{Color.RESET} Supported formats:")
-            print(f"{Color.RED}[-]{Color.RESET}   - Single IP: 192.168.1.1")
-            print(f"{Color.RED}[-]{Color.RESET}   - CIDR: 192.168.1.0/24")
-            print(f"{Color.RED}[-]{Color.RESET}   - IP range: 192.168.1.1-100")
-            print(f"{Color.RED}[-]{Color.RESET}   - Multi-range: 192.168.0-100.0-100")
-            print(f"{Color.RED}[-]{Color.RESET}   - Domain: example.com")
+            print(f"{Color.RED}[-]{Color.RESET} ERROR: Invalid target format")
             return None
 
-        print(f"{Color.GREEN}[+]{Color.RESET} Target validated: {target} ({target_type})")
+        print(f"{Color.GREEN}[+]{Color.RESET} Target: {target} ({target_type})")
 
-        # For multi-range targets, Nmap supports them natively
-        # but we need to handle them specially
-        if target_type == "multi_range":
-            print(f"{Color.CYAN}[i]{Color.RESET} Multi-range format detected")
-            print(f"{Color.CYAN}[i]{Color.RESET} Nmap will handle this format directly")
-
-        # Estimate scan time
         self.estimate_scan_time(target, self.nmap_args, target_type)
 
-        # Result file names
         xml_output = self.reports_dir / "scan_results.xml"
         normal_output = self.reports_dir / "scan_results.txt"
 
-        # Command to execute
         cmd = f"nmap {self.nmap_args} -oX {xml_output} -oN {normal_output} {target}"
 
-        self.logger.info(f"Executing command: {cmd}")
+        self.logger.info(f"Command: {cmd}")
         print(f"\nStarting scan...")
-        print(f"Command: {cmd}")
 
-        # Initialize progress tracker
         progress_tracker = ProgressTracker(target, self.logger)
         progress_tracker.start()
 
-        # Queue for output
         output_queue = queue.Queue()
 
         def read_output(pipe, queue):
-            """Read output from pipe in separate thread"""
             try:
                 for line in iter(pipe.readline, ''):
                     if line:
@@ -608,7 +686,6 @@ class NmapScanner:
                 pass
 
         try:
-            # Start process
             process = subprocess.Popen(
                 cmd,
                 shell=True,
@@ -619,7 +696,6 @@ class NmapScanner:
                 universal_newlines=True
             )
 
-            # Start threads for reading output
             stdout_thread = threading.Thread(
                 target=read_output,
                 args=(process.stdout, output_queue)
@@ -634,14 +710,11 @@ class NmapScanner:
             stdout_thread.start()
             stderr_thread.start()
 
-            # Collect output and display progress
             last_progress_update = time.time()
             lines_buffer = []
 
             while True:
-                # Check if process completed
                 if process.poll() is not None:
-                    # Read remaining output
                     while not output_queue.empty():
                         line = output_queue.get_nowait()
                         if line:
@@ -649,20 +722,14 @@ class NmapScanner:
                             progress_tracker.update(line)
                     break
 
-                # Read output
                 try:
                     line = output_queue.get(timeout=0.1)
                     if line:
                         lines_buffer.append(line)
                         progress_tracker.update(line)
-
-                        # Show informative lines
-                        pass
-
                 except queue.Empty:
                     pass
 
-                # Update progress display every 0.5 seconds
                 current_time = time.time()
                 if current_time - last_progress_update > 0.5:
                     status = progress_tracker.get_status_string()
@@ -670,65 +737,31 @@ class NmapScanner:
                         print(f"\r{Color.BLUE}[*]{Color.RESET} {status}", end='', flush=True)
                     last_progress_update = current_time
 
-            # Wait for threads to complete
             stdout_thread.join(timeout=1)
             stderr_thread.join(timeout=1)
 
-            # Get return code
             return_code = process.wait()
 
+            self.scan_end_time = datetime.now()
+            scan_duration = (self.scan_end_time - self.scan_start_time).total_seconds()
+            self.scan_stats['scan_duration'] = scan_duration
+
             if return_code == 0:
-                print(f"\n{Color.GREEN}[+]{Color.RESET} Scan completed successfully!")
-                self.logger.info("Scan completed successfully")
-
-                # Save output to log
-                full_output = ''.join(lines_buffer)
-                if full_output:
-                    self.logger.info("Nmap scan output saved to log file")
-
+                print(f"\n{Color.GREEN}[+]{Color.RESET} Scan completed in {scan_duration:.1f} seconds!")
+                self.logger.info(f"Scan completed in {scan_duration:.1f} seconds")
                 return xml_output
             else:
-                print(f"\n{Color.RED}[-]{Color.RESET} Nmap exited with error (code: {return_code})")
-                self.logger.error(f"Nmap exited with error code: {return_code}")
-
-                # Show errors
-                error_lines = [line for line in lines_buffer if 'error' in line.lower()]
-                for error_line in error_lines[:5]:  # First 5 errors
-                    print(f"   {Color.RED}[-]{Color.RESET} {error_line.strip()}")
-
+                print(f"\n{Color.RED}[-]{Color.RESET} Nmap error (code: {return_code})")
                 return None
 
         except KeyboardInterrupt:
-            print(f"\n\n{Color.YELLOW}[!]{Color.RESET} Interrupt signal received (Ctrl+C)")
+            print(f"\n\n{Color.YELLOW}[!]{Color.RESET} Scan interrupted")
             self.logger.warning("Scan interrupted by user")
-
-            if 'process' in locals():
-                print(f"   {Color.YELLOW}[!]{Color.RESET} Stopping scan...")
-                process.terminate()
-
-                try:
-                    process.wait(timeout=5)
-                    print(f"   {Color.GREEN}[+]{Color.RESET} Scan stopped")
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    print(f"   {Color.YELLOW}[!]{Color.RESET} Process force terminated")
-
-            # Check if files were created
-            if xml_output.exists():
-                file_size = xml_output.stat().st_size
-                if file_size > 100:
-                    print(f"   {Color.GREEN}[+]{Color.RESET} Partial results saved ({file_size} bytes)")
-                    self.logger.info(f"Partial results saved ({file_size} bytes)")
-                    return xml_output
-
-            print(f"   {Color.RED}[-]{Color.RESET} Results not found or files are empty")
             return None
 
         except Exception as e:
-            print(f"\n{Color.RED}[-]{Color.RESET} Unexpected error: {e}")
-            self.logger.error(f"Unexpected error during scan: {e}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            print(f"\n{Color.RED}[-]{Color.RESET} Error: {e}")
+            self.logger.error(f"Scan error: {e}")
             return None
 
     def parse_nmap_xml(self, xml_file):
@@ -742,58 +775,47 @@ class NmapScanner:
 
             hosts_data = []
             total_hosts = len(root.findall('host'))
-            processed = 0
 
             for host in root.findall('host'):
                 host_info = self.parse_host(host)
                 if host_info:
                     hosts_data.append(host_info)
+                    
+                    self.scan_stats['total_hosts'] += 1
+                    self.scan_stats['open_ports'] += len(host_info['ports'])
+                    
+                    for port_info in host_info['ports']:
+                        category = self.get_service_category(port_info['port'], port_info['service'])
+                        self.scan_stats['services_found'][category] += 1
 
-                processed += 1
-                progress = (processed / total_hosts) * 100 if total_hosts > 0 else 0
-                print(f"\r   {Color.BLUE}[*]{Color.RESET} Processed hosts: {processed}/{total_hosts} ({progress:.1f}%)", end='', flush=True)
-
-            print(f"\n{Color.GREEN}[+]{Color.RESET} Found hosts: {len(hosts_data)}")
-            self.logger.info(f"Found hosts: {len(hosts_data)}")
+            print(f"{Color.GREEN}[+]{Color.RESET} Found {len(hosts_data)} hosts")
+            self.logger.info(f"Found {len(hosts_data)} hosts")
             return hosts_data
 
-        except ET.ParseError as e:
-            self.logger.error(f"XML parsing error: {e}")
-            print(f"{Color.RED}[-]{Color.RESET} Error parsing XML file")
-            return []
         except Exception as e:
-            self.logger.error(f"Error processing XML: {e}")
-            print(f"{Color.RED}[-]{Color.RESET} Error processing results")
+            self.logger.error(f"XML parsing error: {e}")
+            print(f"{Color.RED}[-]{Color.RESET} Error parsing results")
             return []
 
     def parse_host(self, host_element):
         """Parse information about a single host"""
         try:
-            # Get address
             address_elem = host_element.find(".//address[@addrtype='ipv4']")
             if address_elem is None:
                 return None
 
             ip_address = address_elem.get('addr')
-
-            # Get hostname
             hostname_elem = host_element.find(".//hostname")
             hostname = hostname_elem.get('name') if hostname_elem is not None else "Unknown"
 
-            # Get ports
             ports_data = []
             ports_element = host_element.find('ports')
 
             if ports_element is not None:
-                total_ports = len(ports_element.findall('port'))
-                processed_ports = 0
-
                 for port_element in ports_element.findall('port'):
                     port_info = self.parse_port(port_element)
                     if port_info:
                         ports_data.append(port_info)
-
-                    processed_ports += 1
 
             return {
                 'ip': ip_address,
@@ -822,7 +844,6 @@ class NmapScanner:
             service_product = service_elem.get('product', '')
             service_version = service_elem.get('version', '')
 
-            # Script information
             scripts_info = []
             script_elem = port_element.find('script')
             if script_elem is not None:
@@ -844,46 +865,59 @@ class NmapScanner:
             self.logger.error(f"Error parsing port: {e}")
             return None
 
+    def get_service_category(self, port, service_name):
+        """Determine service category"""
+        port = int(port)
+
+        for category, ports in self.service_ports.items():
+            if port in ports:
+                return category
+
+        service_name_lower = service_name.lower()
+
+        if any(web in service_name_lower for web in ['http', 'apache', 'nginx', 'iis']):
+            return 'web'
+        elif 'ssh' in service_name_lower:
+            return 'ssh'
+        elif 'ftp' in service_name_lower:
+            return 'ftp'
+        elif 'smtp' in service_name_lower:
+            return 'smtp'
+        elif 'dns' in service_name_lower:
+            return 'dns'
+        elif 'mysql' in service_name_lower:
+            return 'mysql'
+        elif 'postgres' in service_name_lower:
+            return 'postgresql'
+        elif 'rdp' in service_name_lower:
+            return 'rdp'
+        elif 'smb' in service_name_lower:
+            return 'smb'
+        elif 'snmp' in service_name_lower:
+            return 'snmp'
+
+        return 'other'
+
     def create_service_files(self, hosts_data):
         """Create files by service types"""
         self.logger.info("Creating service-based result files")
         print(f"\nCreating reports...")
 
-        # Group by services
         service_groups = defaultdict(list)
-
-        total_ports = sum(len(host['ports']) for host in hosts_data)
-        processed_ports = 0
 
         for host in hosts_data:
             for port_info in host['ports']:
-                port = port_info['port']
-                service = port_info['service']
-
-                # Determine service category
-                category = self.get_service_category(port, service)
-
+                category = self.get_service_category(port_info['port'], port_info['service'])
                 service_groups[category].append({
                     'host': host['ip'],
                     'hostname': host['hostname'],
-                    'port': port,
-                    'service': service,
+                    'port': port_info['port'],
+                    'service': port_info['service'],
                     'product': port_info['product'],
                     'version': port_info['version']
                 })
 
-                processed_ports += 1
-                progress = (processed_ports / total_ports) * 100 if total_ports > 0 else 0
-                print(f"\r   {Color.BLUE}[*]{Color.RESET} Classifying ports: {processed_ports}/{total_ports} ({progress:.1f}%)", end='', flush=True)
-
-        print()
-
-        # Create files for each category
-        categories = list(service_groups.keys())
-        total_categories = len(categories)
-
-        for i, category in enumerate(categories):
-            hosts = service_groups[category]
+        for category, hosts in service_groups.items():
             if hosts:
                 filename = f"{category}_ports.txt"
                 filepath = self.reports_dir / filename
@@ -905,54 +939,12 @@ class NmapScanner:
                         f.write("-" * 30 + "\n")
 
                 print(f"   {Color.GREEN}[+]{Color.RESET} Created {filename} ({len(hosts)} entries)")
-                self.logger.info(f"Created file: {filename} ({len(hosts)} entries)")
 
-        # Create general file with all open ports
         self.create_summary_file(hosts_data)
-
-    def get_service_category(self, port, service_name):
-        """Determine service category by port and name"""
-        port = int(port)
-
-        # Check by known ports
-        for category, ports in self.service_ports.items():
-            if port in ports:
-                return category
-
-        # Check by service name
-        service_name_lower = service_name.lower()
-
-        if any(web in service_name_lower for web in ['http', 'apache', 'nginx', 'iis']):
-            return 'web'
-        elif 'ssh' in service_name_lower:
-            return 'ssh'
-        elif 'ftp' in service_name_lower:
-            return 'ftp'
-        elif 'smtp' in service_name_lower:
-            return 'smtp'
-        elif 'dns' in service_name_lower:
-            return 'dns'
-        elif 'mysql' in service_name_lower or 'mariadb' in service_name_lower:
-            return 'mysql'
-        elif 'postgres' in service_name_lower:
-            return 'postgresql'
-        elif 'rdp' in service_name_lower or 'remote-desktop' in service_name_lower:
-            return 'rdp'
-        elif 'vnc' in service_name_lower:
-            return 'vnc'
-        elif 'smb' in service_name_lower or 'samba' in service_name_lower:
-            return 'smb'
-        elif 'snmp' in service_name_lower or 'snmptrap' in service_name_lower:
-            return 'snmp'
-
-        # If category not determined
-        return 'other'
 
     def create_summary_file(self, hosts_data):
         """Create general file with results"""
         summary_file = self.reports_dir / "all_open_ports.txt"
-
-        print(f"   {Color.BLUE}[*]{Color.RESET} Creating general report...")
 
         with open(summary_file, 'w', encoding='utf-8') as f:
             f.write("# GENERAL SCAN REPORT\n")
@@ -965,7 +957,7 @@ class NmapScanner:
             f.write(f"Total hosts: {total_hosts}\n")
             f.write(f"Total open ports: {total_ports}\n\n")
 
-            for i, host in enumerate(hosts_data):
+            for host in hosts_data:
                 f.write(f"Host: {host['ip']} ({host['hostname']})\n")
 
                 if host['ports']:
@@ -982,15 +974,122 @@ class NmapScanner:
                         f.write(f"{port_str:10} {service_str}\n")
                 else:
                     f.write("  No open ports\n")
-
                 f.write("\n")
 
-                # Writing progress
-                progress = ((i + 1) / total_hosts) * 100 if total_hosts > 0 else 0
-                print(f"\r   {Color.BLUE}[*]{Color.RESET} Writing report: {i+1}/{total_hosts} hosts ({progress:.1f}%)", end='', flush=True)
+        print(f"{Color.GREEN}[+]{Color.RESET} General report created")
 
-        print(f"\n{Color.GREEN}[+]{Color.RESET} General report created")
-        self.logger.info(f"Created general report file: {summary_file}")
+    def generate_markdown_report(self, hosts_data):
+        """Generate Markdown report"""
+        md_file = self.reports_dir / "scan_report.md"
+        
+        print(f"{Color.CYAN}[i]{Color.RESET} Generating Markdown report...")
+        
+        with open(md_file, 'w', encoding='utf-8') as f:
+            f.write("# Nmap Scan Report\n\n")
+            f.write(f"**Report Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"**Scan Duration:** {self.scan_stats['scan_duration']:.1f} seconds\n")
+            f.write(f"**Scan Arguments:** `{self.nmap_args}`\n\n")
+            
+            f.write("## Executive Summary\n\n")
+            f.write(f"- **Total Hosts Scanned:** {self.scan_stats['total_hosts']}\n")
+            f.write(f"- **Total Open Ports Found:** {self.scan_stats['open_ports']}\n")
+            f.write(f"- **Scan Start Time:** {self.scan_start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"- **Scan End Time:** {self.scan_end_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            if self.scan_stats['services_found']:
+                f.write("## Service Distribution\n\n")
+                f.write("| Service Category | Count | Percentage |\n")
+                f.write("|------------------|-------|------------|\n")
+                
+                total_ports = self.scan_stats['open_ports']
+                for category, count in sorted(self.scan_stats['services_found'].items(), 
+                                            key=lambda x: x[1], reverse=True):
+                    percentage = (count / total_ports * 100) if total_ports > 0 else 0
+                    f.write(f"| {category.capitalize()} | {count} | {percentage:.1f}% |\n")
+                f.write("\n")
+            
+            f.write("## Detailed Findings\n\n")
+            
+            if hosts_data:
+                for host in hosts_data:
+                    f.write(f"### {host['ip']}")
+                    if host['hostname'] != "Unknown":
+                        f.write(f" ({host['hostname']})")
+                    f.write("\n\n")
+                    
+                    if host['ports']:
+                        f.write("| Port | Protocol | Service | Version |\n")
+                        f.write("|------|----------|---------|---------|\n")
+                        
+                        for port_info in host['ports']:
+                            version_info = ""
+                            if port_info['product']:
+                                version_info = port_info['product']
+                                if port_info['version']:
+                                    version_info += f" {port_info['version']}"
+                            
+                            f.write(f"| {port_info['port']} | {port_info['protocol']} | ")
+                            f.write(f"{port_info['service']} | {version_info} |\n")
+                    else:
+                        f.write("*No open ports found*\n")
+                    
+                    f.write("\n")
+            else:
+                f.write("*No hosts with open ports found*\n\n")
+            
+            f.write("## Security Recommendations\n\n")
+            
+            critical_services = []
+            for host in hosts_data:
+                for port_info in host['ports']:
+                    port = port_info['port']
+                    if port in [22, 3389, 445, 5900, 1433, 3306, 5432]:
+                        service_name = port_info['service']
+                        version = port_info.get('version', '')
+                        critical_services.append({
+                            'host': host['ip'],
+                            'port': port,
+                            'service': service_name,
+                            'version': version
+                        })
+            
+            if critical_services:
+                f.write("### Critical Services Found\n\n")
+                f.write("The following critical services were detected. Ensure they are properly secured:\n\n")
+                
+                for service in critical_services:
+                    f.write(f"- **{service['host']}:{service['port']}** - {service['service']}")
+                    if service['version']:
+                        f.write(f" ({service['version']})")
+                    f.write("\n")
+                
+                f.write("\n### Recommended Actions:\n\n")
+                f.write("1. **SSH (Port 22):** Use key-based authentication, disable root login\n")
+                f.write("2. **RDP (Port 3389):** Enable Network Level Authentication, use strong passwords\n")
+                f.write("3. **SMB (Port 445):** Disable SMBv1, use latest SMB version\n")
+                f.write("4. **Database Ports:** Use firewalls, strong authentication, encryption\n")
+            else:
+                f.write("No critical services detected in this scan.\n\n")
+            
+            f.write("## Appendix\n\n")
+            f.write("### Scan Parameters\n")
+            f.write(f"```\n{self.nmap_args}\n```\n\n")
+            
+            f.write("### Files Generated\n")
+            f.write("- `scan_results.xml` - Raw Nmap XML output\n")
+            f.write("- `scan_results.txt` - Raw Nmap text output\n")
+            f.write("- `all_open_ports.txt` - Summary of all open ports\n")
+            f.write("- Service-specific files (e.g., `web_ports.txt`, `ssh_ports.txt`)\n")
+            f.write("- `scan_report.html` - HTML report (if xsltproc available)\n")
+            f.write("- `scan_report.md` - This markdown report\n\n")
+            
+            f.write("### Notes\n")
+            f.write("- This report was automatically generated by Nmap Scan Analyzer\n")
+            f.write("- Always verify findings manually before taking action\n")
+            f.write("- Regular scanning helps maintain security posture\n")
+        
+        print(f"{Color.GREEN}[+]{Color.RESET} Markdown report created: {md_file}")
+        return md_file
 
     def generate_html_report(self, xml_file):
         """Generate HTML report from XML"""
@@ -998,42 +1097,30 @@ class NmapScanner:
         print(f"\nCreating HTML report...")
 
         html_output = self.reports_dir / "scan_report.html"
-        xslt_file = "/usr/share/nmap/nmap.xsl"  # Standard XSLT path in Linux
+        xslt_file = "/usr/share/nmap/nmap.xsl"
 
-        # Check if XSLT file exists
         if not os.path.exists(xslt_file):
             self.logger.warning(f"XSLT file not found: {xslt_file}")
             self.logger.info("Trying to find alternative XSLT file...")
 
-            # Search alternative paths
             alternative_paths = [
                 "/usr/local/share/nmap/nmap.xsl",
-                "/opt/homebrew/share/nmap/nmap.xsl",  # For macOS with Homebrew
-                "nmap.xsl"  # In current directory
+                "/opt/homebrew/share/nmap/nmap.xsl",
+                "nmap.xsl"
             ]
 
             for path in alternative_paths:
                 if os.path.exists(path):
                     xslt_file = path
-                    self.logger.info(f"Found XSLT file: {xslt_file}")
-                    print(f"   {Color.CYAN}[i]{Color.RESET} Found XSLT file: {xslt_file}")
                     break
             else:
-                self.logger.error("XSLT file not found. HTML report will not be created.")
-                self.logger.info("Install nmap or specify nmap.xsl path manually")
-                print(f"   {Color.YELLOW}[!]{Color.RESET} XSLT file not found. Creating simple report...")
-                self.create_simple_html_report(xml_file)
+                self.logger.error("XSLT file not found.")
                 return True
 
         try:
-            # Use xsltproc to convert XML to HTML
             cmd = f"xsltproc -o {html_output} {xslt_file} {xml_file}"
-
             print(f"   {Color.BLUE}[*]{Color.RESET} Converting XML to HTML...")
-            self.logger.info(f"Executing conversion: {cmd}")
-
-            # Show conversion progress
-            start_time = time.time()
+            
             result = subprocess.run(
                 cmd,
                 shell=True,
@@ -1041,155 +1128,15 @@ class NmapScanner:
                 capture_output=True,
                 text=True
             )
-
-            elapsed = time.time() - start_time
-            print(f"   {Color.GREEN}[+]{Color.RESET} HTML report created in {elapsed:.1f} seconds")
-            self.logger.info("HTML report successfully created")
+            
+            print(f"   {Color.GREEN}[+]{Color.RESET} HTML report created")
             return True
 
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Error creating HTML report: {e}")
-            self.logger.error(f"Error output: {e.stderr}")
-            print(f"   {Color.YELLOW}[!]{Color.RESET} Error creating HTML report. Creating simple version...")
-
-            # Try to create simple HTML report manually
-            self.create_simple_html_report(xml_file)
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Unexpected error: {e}")
-            print(f"   {Color.RED}[-]{Color.RESET} Error creating report: {e}")
+        except subprocess.CalledProcessError:
+            print(f"   {Color.YELLOW}[!]{Color.RESET} Error creating HTML report")
             return False
 
-    def create_simple_html_report(self, xml_file):
-        """Create simple HTML report manually"""
-        self.logger.info("Creating simple HTML report")
-        print(f"   {Color.BLUE}[*]{Color.RESET} Creating simple HTML report...")
-
-        html_output = self.reports_dir / "scan_report_simple.html"
-        hosts_data = self.parse_nmap_xml(xml_file)
-
-        if not hosts_data:
-            print(f"   {Color.RED}[-]{Color.RESET} No data for report")
-            return
-
-        html_content = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nmap Scan Report</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
-        h2 { color: #444; margin-top: 30px; }
-        .host { background: #f9f9f9; border: 1px solid #ddd; border-radius: 5px; padding: 15px; margin-bottom: 20px; }
-        .host-header { background: #4CAF50; color: white; padding: 10px; border-radius: 3px; margin: -15px -15px 15px -15px; }
-        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background-color: #4CAF50; color: white; }
-        tr:hover { background-color: #f5f5f5; }
-        .summary { background: #e8f5e9; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-        .timestamp { color: #666; font-style: italic; }
-        .service-web { background-color: #e3f2fd; }
-        .service-ssh { background-color: #f3e5f5; }
-        .service-ftp { background-color: #e8f5e8; }
-        .category { padding: 3px 8px; border-radius: 3px; font-size: 12px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Nmap Scan Report</h1>
-        <div class="timestamp">Generated: """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</div>
-
-        <div class="summary">
-            <h2>Statistics</h2>"""
-
-        # Add statistics
-        total_hosts = len(hosts_data)
-        total_ports = sum(len(host['ports']) for host in hosts_data)
-
-        # Count by categories
-        categories = {}
-        for host in hosts_data:
-            for port_info in host['ports']:
-                category = self.get_service_category(port_info['port'], port_info['service'])
-                categories[category] = categories.get(category, 0) + 1
-
-        html_content += f"""
-            <p><strong>Total hosts:</strong> {total_hosts}</p>
-            <p><strong>Total open ports:</strong> {total_ports}</p>"""
-
-        # Add category statistics
-        if categories:
-            html_content += "<p><strong>Service distribution:</strong></p><ul>"
-            for category, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
-                percentage = (count / total_ports * 100) if total_ports > 0 else 0
-                html_content += f"<li>{category}: {count} ports ({percentage:.1f}%)</li>"
-            html_content += "</ul>"
-
-        html_content += """
-        </div>
-
-        <h2>Results by Host</h2>"""
-
-        # Add information for each host
-        for host in hosts_data:
-            html_content += f"""
-        <div class="host">
-            <div class="host-header">
-                <h3>{host['ip']} ({host['hostname']})</h3>
-            </div>"""
-
-            if host['ports']:
-                html_content += """
-            <table>
-                <thead>
-                    <tr>
-                        <th>Port</th>
-                        <th>Protocol</th>
-                        <th>Service</th>
-                        <th>Product</th>
-                        <th>Version</th>
-                        <th>Category</th>
-                    </tr>
-                </thead>
-                <tbody>"""
-
-                for port_info in host['ports']:
-                    category = self.get_service_category(port_info['port'], port_info['service'])
-                    service_class = f"service-{category}"
-                    html_content += f"""
-                    <tr class="{service_class}">
-                        <td><strong>{port_info['port']}</strong></td>
-                        <td>{port_info['protocol']}</td>
-                        <td>{port_info['service']}</td>
-                        <td>{port_info['product']}</td>
-                        <td>{port_info['version']}</td>
-                        <td><span class="category">{category}</span></td>
-                    </tr>"""
-
-                html_content += """
-                </tbody>
-            </table>"""
-            else:
-                html_content += "<p>No open ports</p>"
-
-            html_content += "</div>"
-
-        html_content += """
-    </div>
-</body>
-</html>"""
-
-        with open(html_output, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-
-        print(f"   {Color.GREEN}[+]{Color.RESET} Simple HTML report created")
-        self.logger.info(f"Created simple HTML report: {html_output}")
-
-    def run(self, target, target_type):
+    def run(self, target, target_type, use_parallel=False, max_workers=4):
         """Main method to start scan and analysis"""
         self.logger.info(f"Starting scan of target: {target}")
 
@@ -1199,38 +1146,41 @@ class NmapScanner:
         print(f"Target: {target}")
         print(f"Parameters: {self.nmap_args}")
         print(f"Directory: {self.output_dir}")
+        if use_parallel:
+            print(f"Parallel Scan: Enabled ({max_workers} workers)")
         print('='*60)
 
-        # Execute scan
-        xml_file = self.run_nmap_scan(target, target_type)
-
-        if not xml_file or not xml_file.exists():
-            self.logger.error("Scan failed or XML file not created")
-            print(f"\n{Color.RED}[-]{Color.RESET} Scan failed")
-            return False
-
-        print(f"\n{'='*60}")
-        print("ANALYZING RESULTS")
-        print('='*60)
-
-        # Parse results
-        hosts_data = self.parse_nmap_xml(xml_file)
+        if use_parallel and target_type in ["cidr", "ip_range", "multi_range"]:
+            print(f"{Color.CYAN}[i]{Color.RESET} Using parallel scanning...")
+            parallel_scanner = ParallelScanner(self, max_workers)
+            hosts_data = parallel_scanner.parallel_scan(target, target_type)
+            
+            if hosts_data is None:
+                xml_file = self.run_nmap_scan(target, target_type)
+                if not xml_file:
+                    return False
+                hosts_data = self.parse_nmap_xml(xml_file)
+        else:
+            xml_file = self.run_nmap_scan(target, target_type)
+            if not xml_file or not xml_file.exists():
+                print(f"\n{Color.RED}[-]{Color.RESET} Scan failed")
+                return False
+            hosts_data = self.parse_nmap_xml(xml_file)
 
         if not hosts_data:
-            self.logger.warning("No data for analysis")
             print(f"\n{Color.YELLOW}[!]{Color.RESET} No open ports for analysis")
             return False
 
-        # Create service-based files
         self.create_service_files(hosts_data)
 
-        # Generate HTML report
-        self.generate_html_report(xml_file)
+        if not use_parallel or (use_parallel and os.path.exists(self.reports_dir / "scan_results.xml")):
+            self.generate_html_report(self.reports_dir / "scan_results.xml")
+        
+        self.generate_markdown_report(hosts_data)
 
         print(f"\n{'='*60}")
-        print(f"{Color.GREEN}[+]{Color.RESET} ANALYSIS COMPLETED SUCCESSFULLY!")
+        print(f"{Color.GREEN}[+]{Color.RESET} ANALYSIS COMPLETED!")
         print('='*60)
-        self.logger.info("Analysis completed successfully!")
         self.print_summary()
 
         return True
@@ -1240,8 +1190,9 @@ class NmapScanner:
         print(f"\nRESULTS SUMMARY")
         print('='*60)
         print(f"Results directory: {self.output_dir}")
-        print(f"Log file: {self.log_file}")
-        print(f"Reports: {self.reports_dir}")
+        print(f"Scan duration: {self.scan_stats['scan_duration']:.1f} seconds")
+        print(f"Hosts found: {self.scan_stats['total_hosts']}")
+        print(f"Open ports: {self.scan_stats['open_ports']}")
         print(f"\nCreated files:")
 
         files = list(self.reports_dir.iterdir())
@@ -1253,8 +1204,10 @@ class NmapScanner:
         else:
             print(f"   {Color.RED}[-]{Color.RESET} No files found")
 
-        print(f"\nTip: Open {self.reports_dir}/scan_report.html in browser")
-        print(f"     to view results in convenient format")
+        print(f"\nReports:")
+        print(f"   • HTML: {self.reports_dir}/scan_report.html")
+        print(f"   • Markdown: {self.reports_dir}/scan_report.md")
+        print(f"   • Text: {self.reports_dir}/all_open_ports.txt")
         print('='*60)
 
 def main():
@@ -1262,100 +1215,91 @@ def main():
         description='Nmap Scan Analyzer - automates Nmap scanning and results analysis',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Usage examples:
+Examples:
   %(prog)s 192.168.1.1 -D scan_results
-  %(prog)s 192.168.0.0/24 -D network_scan -n "-sS -sV -p 1-1000"
-  %(prog)s scanme.nmap.org -D internet_scan -n "-sC -sV --top-ports 1000"
-  %(prog)s 192.168.1.1-100 -D range_scan -n "-sS -sV"
-  %(prog)s 192.168.0-100.0-100 -D multi_range_scan -n "-sS -sV --top-ports 50"
+  %(prog)s 192.168.1.0/24 -D network_scan -p standart
+  %(prog)s 192.168.1.1-100 -D range_scan -p quick --parallel
+  %(prog)s scanme.nmap.org -D internet_scan -n "-sC -sV"
 
-IMPORTANT: Use -p- (all ports) only for single hosts.
-For networks use --top-ports N or specific port ranges.
+Profiles: quick, standart, full, udp, stealth, comprehensive
         """
     )
 
     parser.add_argument('target', help='Scan target (IP, CIDR, IP range, multi-range or domain)')
-    parser.add_argument('-D', '--directory', required=True,
-                       help='Directory name to save results')
-    parser.add_argument('-n', '--nmap-args',
-                       default='-sV --top-ports 100',
-                       help='Arguments for Nmap (default: -sV --top-ports 100)')
+    parser.add_argument('-D', '--directory', required=True, help='Directory to save results')
+    parser.add_argument('-n', '--nmap-args', help='Custom Nmap arguments (overrides profile)')
+    parser.add_argument('-p', '--profile', default='standart', 
+                       help='Scan profile (quick, standart, full, udp, stealth, comprehensive)')
+    parser.add_argument('--parallel', action='store_true', help='Enable parallel scanning')
+    parser.add_argument('--workers', type=int, default=4, help='Number of parallel workers (default: 4)')
+    parser.add_argument('--list-profiles', action='store_true', help='List available profiles and exit')
 
     args = parser.parse_args()
 
-    # Validate target before creating scanner
+    if args.list_profiles:
+        print(f"{Color.CYAN}[i]{Color.RESET} Available scan profiles:")
+        for profile_name in ScanProfiles.list_profiles():
+            print(f"\n{Color.BOLD}{profile_name}:{Color.RESET}")
+            profile = ScanProfiles.get_profile(profile_name)
+            print(f"  Description: {profile['description']}")
+            print(f"  Arguments: {profile['args']}")
+            print(f"  Time: {profile['time']}, Stealth: {profile['stealth']}")
+        sys.exit(0)
+
+    print_banner()
+    
     is_valid, target_type = validate_target(args.target)
     if not is_valid:
-        print(f"{Color.RED}[-]{Color.RESET} ERROR: Invalid target format '{args.target}'")
-        print(f"{Color.RED}[-]{Color.RESET} Supported formats:")
-        print(f"{Color.RED}[-]{Color.RESET}   - Single IP: 192.168.1.1")
-        print(f"{Color.RED}[-]{Color.RESET}   - CIDR: 192.168.1.0/24")
-        print(f"{Color.RED}[-]{Color.RESET}   - IP range: 192.168.1.1-100")
-        print(f"{Color.RED}[-]{Color.RESET}   - Multi-range: 192.168.0-100.0-100")
-        print(f"{Color.RED}[-]{Color.RESET}   - Domain: example.com")
+        print(f"{Color.RED}[-]{Color.RESET} ERROR: Invalid target format")
         sys.exit(1)
 
-    print(f"{Color.GREEN}[+]{Color.RESET} Target validated: {args.target} ({target_type})")
+    print(f"{Color.GREEN}[+]{Color.RESET} Target: {args.target} ({target_type})")
 
-    # Calculate number of hosts for large scans warning
+    if args.nmap_args:
+        nmap_args = args.nmap_args
+        print(f"{Color.CYAN}[i]{Color.RESET} Using custom Nmap arguments")
+    else:
+        if args.profile not in ScanProfiles.PROFILES:
+            print(f"{Color.YELLOW}[!]{Color.RESET} Unknown profile '{args.profile}', using 'standart'")
+            args.profile = 'standart'
+        
+        profile = ScanProfiles.get_profile(args.profile)
+        nmap_args = profile['args']
+        print(f"{Color.CYAN}[i]{Color.RESET} Using '{args.profile}' profile: {profile['description']}")
+
     hosts_count = calculate_hosts_count(args.target, target_type)
-    
-    # Warn for large scans and ask for confirmation
     if hosts_count and hosts_count > 10000:
-        print(f"\n{Color.YELLOW}[!]{Color.RESET} WARNING: LARGE SCAN DETECTED")
-        print(f"{Color.YELLOW}[!]{Color.RESET} Target: {args.target}")
-        print(f"{Color.YELLOW}[!]{Color.RESET} Estimated hosts: {hosts_count}")
-        print(f"{Color.YELLOW}[!]{Color.RESET} This scan may take a VERY long time")
-        print(f"{Color.YELLOW}[!]{Color.RESET} Consider using smaller ranges or fewer ports")
+        print(f"\n{Color.YELLOW}[!]{Color.RESET} WARNING: Large scan detected ({hosts_count} hosts)")
         
-        # Ask for confirmation
-        response = input(f"\n{Color.YELLOW}[?]{Color.RESET} Continue with scan? (y/N): ").strip().lower()
+        response = input(f"{Color.YELLOW}[?]{Color.RESET} Continue? (y/N): ").strip().lower()
         if response not in ['y', 'yes']:
-            print(f"\n{Color.YELLOW}[!]{Color.RESET} Scan cancelled by user")
+            print(f"{Color.YELLOW}[!]{Color.RESET} Scan cancelled")
             sys.exit(0)
-        
-        # Double check for extremely large scans
-        if hosts_count > 50000:
-            print(f"\n{Color.RED}[!]{Color.RESET} EXTREME WARNING: {hosts_count} HOSTS")
-            print(f"{Color.RED}[!]{Color.RESET} This scan could take days or weeks!")
-            response2 = input(f"\n{Color.RED}[?]{Color.RESET} Are you REALLY sure? (yes/NO): ").strip().lower()
-            if response2 != 'yes':
-                print(f"\n{Color.YELLOW}[!]{Color.RESET} Scan cancelled")
-                sys.exit(0)
 
-    # Create scanner instance
-    scanner = NmapScanner(args.directory, args.nmap_args)
+    scanner = NmapScanner(args.directory, nmap_args)
 
-    # Start scan
-    success = scanner.run(args.target, target_type)
+    success = scanner.run(args.target, target_type, args.parallel, args.workers)
 
     if success:
-        print(f"\n{Color.GREEN}[+]{Color.RESET} ALL OPERATIONS COMPLETED SUCCESSFULLY!")
+        print(f"\n{Color.GREEN}[+]{Color.RESET} SCAN COMPLETED SUCCESSFULLY!")
         print(f"Results saved to: {args.directory}")
-        print(f"Log file: {args.directory}/log.txt")
         sys.exit(0)
     else:
-        print(f"\n{Color.RED}[-]{Color.RESET} SCAN COMPLETED WITH ERRORS OR INTERRUPTED")
+        print(f"\n{Color.RED}[-]{Color.RESET} SCAN COMPLETED WITH ERRORS")
         print(f"Check log file: {args.directory}/log.txt")
         sys.exit(1)
 
 if __name__ == "__main__":
-    # Check if nmap is installed
     if shutil.which("nmap") is None:
-        print(f"{Color.RED}[-]{Color.RESET} Error: Nmap not installed or not found in PATH")
+        print(f"{Color.RED}[-]{Color.RESET} Error: Nmap not installed")
         print("Install Nmap to use this script")
-        print("Ubuntu/Debian: sudo apt-get install nmap")
-        print("CentOS/RHEL: sudo yum install nmap")
-        print("macOS: brew install nmap")
         sys.exit(1)
 
     try:
         main()
     except KeyboardInterrupt:
-        print(f"\n\n{Color.YELLOW}[!]{Color.RESET} Program interrupted by user")
+        print(f"\n\n{Color.YELLOW}[!]{Color.RESET} Program interrupted")
         sys.exit(0)
     except Exception as e:
-        print(f"\n{Color.RED}[-]{Color.RESET} Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\n{Color.RED}[-]{Color.RESET} Error: {e}")
         sys.exit(1)
