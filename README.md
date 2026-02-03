@@ -14,7 +14,7 @@
 ✅ **Large Network Support** - Optimized for /16, /8 network scans  
 ✅ **Flexible Configuration** - Customizable scanning parameters  
 ✅ **Ethical by Default** - Non-intrusive scanning presets  
-✅ **Professional Reports** - Clean HTML reports with visual categorization  
+✅ **Professional Reports** - Clean HTML and MD reports with visual categorization  
 
 ## Quick Start
 
@@ -52,6 +52,19 @@ sudo chmod +x ./NmapAnalyzer.py
 
 #Scanning multiple networks
 ./NmapAnalyzer.py 192.168-255.0-255.0-255 -D report
+
+#Scanning with other profiles
+./NmapAnalyzer.py -p quick 192.168.0.2 -D report
+```
+
+### Profiles
+```bash
+quick: -sS -T4 --top-ports 20
+standart: sS -sV -T4 --top-ports 100
+full: -sS -sV -sC -T4 -A
+udp: -sU -T4 --top-ports 20
+stealth: -sS -T2 -f --top-ports 50
+comprehensive: -sS -sV -sC -A -p-
 ```
 
 ## Legal Disclaimer
