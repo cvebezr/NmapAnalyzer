@@ -18,7 +18,6 @@ import shutil
 import time
 import threading
 import queue
-import concurrent.futures
 import json
 
 class Color:
@@ -385,159 +384,8 @@ class ProgressTracker:
 
         return " | ".join(status)
 
-class ParallelScanner:
-    """Parallel scanning manager"""
-    
-    def __init__(self, scanner_instance, max_workers=4):
-        self.scanner = scanner_instance
-        self.max_workers = max_workers
-        self.results = []
-        
-    def split_target(self, target, target_type):
-        """Split target into smaller chunks for parallel scanning"""
-        chunks = []
-        
-        if target_type == "cidr":
-            parts = target.split('/')
-            base_ip = parts[0]
-            mask = int(parts[1])
-            
-            if mask <= 24:
-                new_mask = 24
-                networks = 2 ** (24 - mask) if mask < 24 else 1
-                for i in range(networks):
-                    network_ip = f"{base_ip.rsplit('.', 1)[0]}.{i}"
-                    chunks.append(f"{network_ip}.0/{new_mask}")
-        
-        elif target_type == "multi_range":
-            ips = expand_multi_range(target)
-            chunk_size = max(1, len(ips) // self.max_workers)
-            
-            for i in range(0, len(ips), chunk_size):
-                chunk_ips = ips[i:i + chunk_size]
-                if chunk_ips:
-                    chunks.append(f"{chunk_ips[0]}-{chunk_ips[-1].split('.')[-1]}")
-        
-        elif target_type == "ip_range":
-            parts = target.split('-')
-            ip_base = parts[0]
-            range_end = int(parts[1])
-            ip_parts = ip_base.split('.')
-            
-            if len(ip_parts) == 4:
-                start = int(ip_parts[3])
-                total = range_end - start + 1
-                chunk_size = max(1, total // self.max_workers)
-                
-                for i in range(start, range_end + 1, chunk_size):
-                    end = min(i + chunk_size - 1, range_end)
-                    chunks.append(f"{ip_base.rsplit('.', 1)[0]}.{i}-{end}")
-        
-        if not chunks:
-            chunks = [target]
-            
-        return chunks
-    
-    def scan_chunk(self, chunk_target):
-        """Scan a single chunk"""
-        try:
-            import tempfile
-            import uuid
-            temp_dir = Path(tempfile.gettempdir()) / f"nmap_chunk_{uuid.uuid4().hex[:8]}"
-            temp_dir.mkdir(exist_ok=True)
-            
-            chunk_scanner = NmapScanner(str(temp_dir), self.scanner.nmap_args)
-            
-            xml_file = chunk_scanner.run_nmap_scan(chunk_target, "chunk")
-            
-            if xml_file and xml_file.exists():
-                hosts_data = chunk_scanner.parse_nmap_xml(xml_file)
-                
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                
-                return {
-                    'target': chunk_target,
-                    'hosts': hosts_data,
-                    'success': True
-                }
-            else:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                return {
-                    'target': chunk_target,
-                    'hosts': [],
-                    'success': False,
-                    'error': 'Scan failed'
-                }
-                
-        except Exception as e:
-            return {
-                'target': chunk_target,
-                'hosts': [],
-                'success': False,
-                'error': str(e)
-            }
-    
-    def parallel_scan(self, target, target_type):
-        """Execute parallel scan"""
-        print(f"{Color.CYAN}[i]{Color.RESET} Setting up parallel scan ({self.max_workers} workers)...")
-        
-        chunks = self.split_target(target, target_type)
-        
-        if len(chunks) == 1:
-            print(f"{Color.YELLOW}[!]{Color.RESET} Cannot parallelize this target. Running single scan.")
-            return None
-        
-        print(f"{Color.CYAN}[i]{Color.RESET} Split into {len(chunks)} chunks")
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_chunk = {
-                executor.submit(self.scan_chunk, chunk): chunk 
-                for chunk in chunks
-            }
-            
-            results = []
-            completed = 0
-            total = len(chunks)
-            
-            for future in concurrent.futures.as_completed(future_to_chunk):
-                chunk = future_to_chunk[future]
-                completed += 1
-                
-                try:
-                    result = future.result()
-                    results.append(result)
-                    
-                    if result['success']:
-                        print(f"{Color.GREEN}[+]{Color.RESET} Chunk '{chunk}' completed ({completed}/{total})")
-                        print(f"   Found {len(result['hosts'])} hosts")
-                    else:
-                        print(f"{Color.RED}[-]{Color.RESET} Chunk '{chunk}' failed: {result.get('error', 'Unknown error')}")
-                        
-                except Exception as e:
-                    print(f"{Color.RED}[-]{Color.RESET} Chunk '{chunk}' error: {e}")
-                    results.append({
-                        'target': chunk,
-                        'hosts': [],
-                        'success': False,
-                        'error': str(e)
-                    })
-        
-        all_hosts = []
-        successful_chunks = 0
-        
-        for result in results:
-            if result['success']:
-                all_hosts.extend(result['hosts'])
-                successful_chunks += 1
-        
-        print(f"\n{Color.CYAN}[i]{Color.RESET} Parallel scan completed")
-        print(f"   Successful chunks: {successful_chunks}/{len(chunks)}")
-        print(f"   Total hosts found: {len(all_hosts)}")
-        
-        return all_hosts
-
 class NmapScanner:
-    def __init__(self, output_dir, nmap_args=None):
+    def __init__(self, output_dir, nmap_args=None, credcheck=False):
         self.output_dir = Path(output_dir)
         self.log_file = self.output_dir / "log.txt"
         self.reports_dir = self.output_dir / "reports"
@@ -550,6 +398,7 @@ class NmapScanner:
             'services_found': defaultdict(int),
             'scan_duration': 0
         }
+        self.credcheck = credcheck
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.reports_dir.mkdir(exist_ok=True)
@@ -592,6 +441,8 @@ class NmapScanner:
 
         self.logger.info(f"Scanner initialized. Directory: {self.output_dir}")
         self.logger.info(f"Nmap arguments: {self.nmap_args}")
+        if self.credcheck:
+            self.logger.info("Credcheck mode: ENABLED")
 
     def estimate_scan_time(self, target, nmap_args, target_type):
         """Estimate scan time"""
@@ -898,6 +749,63 @@ class NmapScanner:
 
         return 'other'
 
+    def create_credcheck_files(self, hosts_data):
+        """Create credential checking structure in CC folder"""
+        if not self.credcheck:
+            return
+            
+        print(f"\n{Color.CYAN}[i]{Color.RESET} Creating credential checking structure...")
+        
+        # Создаем папку CC в reports
+        cc_dir = self.reports_dir / "CC"
+        cc_dir.mkdir(exist_ok=True)
+        
+        # Собираем данные по портам
+        port_hosts_map = defaultdict(list)
+        
+        for host in hosts_data:
+            ip = host['ip']
+            for port_info in host['ports']:
+                port = port_info['port']
+                port_hosts_map[port].append(ip)
+        
+        # Создаем папки для каждого порта и файлы hosts.txt
+        created_folders = 0
+        created_files = 0
+        
+        for port, ips in port_hosts_map.items():
+            # Создаем папку с именем порта
+            port_dir = cc_dir / str(port)
+            port_dir.mkdir(exist_ok=True)
+            created_folders += 1
+            
+            # Создаем файл hosts.txt
+            hosts_file = port_dir / "hosts.txt"
+            with open(hosts_file, 'w', encoding='utf-8') as f:
+                for ip in sorted(ips):
+                    f.write(f"{ip}\n")
+            created_files += 1
+            
+            self.logger.info(f"Created credential folder for port {port}: {len(ips)} hosts")
+        
+        print(f"   {Color.GREEN}[+]{Color.RESET} Created {created_folders} port folders")
+        print(f"   {Color.GREEN}[+]{Color.RESET} Created {created_files} hosts.txt files")
+        
+        # Создаем summary файл
+        summary_file = cc_dir / "summary.txt"
+        with open(summary_file, 'w', encoding='utf-8') as f:
+            f.write("# Credential Checking Summary\n")
+            f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("#" * 50 + "\n\n")
+            
+            for port, ips in sorted(port_hosts_map.items()):
+                f.write(f"Port {port}: {len(ips)} hosts\n")
+                for ip in sorted(ips):
+                    f.write(f"  {ip}\n")
+                f.write("\n")
+        
+        print(f"   {Color.GREEN}[+]{Color.RESET} Created summary file: {summary_file}")
+
     def create_service_files(self, hosts_data):
         """Create files by service types"""
         self.logger.info("Creating service-based result files")
@@ -1081,9 +989,11 @@ class NmapScanner:
             f.write("- `all_open_ports.txt` - Summary of all open ports\n")
             f.write("- Service-specific files (e.g., `web_ports.txt`, `ssh_ports.txt`)\n")
             f.write("- `scan_report.html` - HTML report (if xsltproc available)\n")
-            f.write("- `scan_report.md` - This markdown report\n\n")
+            f.write("- `scan_report.md` - This markdown report\n")
+            if self.credcheck:
+                f.write("- `CC/` folder - Structured host lists by port for credential checking\n")
             
-            f.write("### Notes\n")
+            f.write("\n### Notes\n")
             f.write("- This report was automatically generated by Nmap Scan Analyzer\n")
             f.write("- Always verify findings manually before taking action\n")
             f.write("- Regular scanning helps maintain security posture\n")
@@ -1136,7 +1046,7 @@ class NmapScanner:
             print(f"   {Color.YELLOW}[!]{Color.RESET} Error creating HTML report")
             return False
 
-    def run(self, target, target_type, use_parallel=False, max_workers=4):
+    def run(self, target, target_type):
         """Main method to start scan and analysis"""
         self.logger.info(f"Starting scan of target: {target}")
 
@@ -1146,37 +1056,28 @@ class NmapScanner:
         print(f"Target: {target}")
         print(f"Parameters: {self.nmap_args}")
         print(f"Directory: {self.output_dir}")
-        if use_parallel:
-            print(f"Parallel Scan: Enabled ({max_workers} workers)")
+        if self.credcheck:
+            print(f"Credcheck mode: ENABLED")
         print('='*60)
 
-        if use_parallel and target_type in ["cidr", "ip_range", "multi_range"]:
-            print(f"{Color.CYAN}[i]{Color.RESET} Using parallel scanning...")
-            parallel_scanner = ParallelScanner(self, max_workers)
-            hosts_data = parallel_scanner.parallel_scan(target, target_type)
+        xml_file = self.run_nmap_scan(target, target_type)
+        if not xml_file or not xml_file.exists():
+            print(f"\n{Color.RED}[-]{Color.RESET} Scan failed")
+            return False
             
-            if hosts_data is None:
-                xml_file = self.run_nmap_scan(target, target_type)
-                if not xml_file:
-                    return False
-                hosts_data = self.parse_nmap_xml(xml_file)
-        else:
-            xml_file = self.run_nmap_scan(target, target_type)
-            if not xml_file or not xml_file.exists():
-                print(f"\n{Color.RED}[-]{Color.RESET} Scan failed")
-                return False
-            hosts_data = self.parse_nmap_xml(xml_file)
+        hosts_data = self.parse_nmap_xml(xml_file)
 
         if not hosts_data:
             print(f"\n{Color.YELLOW}[!]{Color.RESET} No open ports for analysis")
             return False
 
         self.create_service_files(hosts_data)
-
-        if not use_parallel or (use_parallel and os.path.exists(self.reports_dir / "scan_results.xml")):
-            self.generate_html_report(self.reports_dir / "scan_results.xml")
-        
+        self.generate_html_report(self.reports_dir / "scan_results.xml")
         self.generate_markdown_report(hosts_data)
+        
+        # Создаем структуру для проверки учетных данных, если включен флаг
+        if self.credcheck:
+            self.create_credcheck_files(hosts_data)
 
         print(f"\n{'='*60}")
         print(f"{Color.GREEN}[+]{Color.RESET} ANALYSIS COMPLETED!")
@@ -1201,6 +1102,22 @@ class NmapScanner:
                 if file.is_file():
                     size_kb = file.stat().st_size / 1024
                     print(f"   {i:2d}. {file.name:30} ({size_kb:.1f} KB)")
+        
+        # Показываем CC папку, если она создана
+        cc_dir = self.reports_dir / "CC"
+        if cc_dir.exists():
+            print(f"   CC/ - Credential checking structure")
+            
+            # Показываем количество папок с портами
+            port_folders = [d for d in cc_dir.iterdir() if d.is_dir()]
+            if port_folders:
+                print(f"      Contains {len(port_folders)} port folders:")
+                for folder in sorted(port_folders, key=lambda x: int(x.name) if x.name.isdigit() else x.name):
+                    hosts_file = folder / "hosts.txt"
+                    if hosts_file.exists():
+                        with open(hosts_file, 'r', encoding='utf-8') as f:
+                            host_count = len(f.readlines())
+                        print(f"      - {folder.name}/: {host_count} hosts")
         else:
             print(f"   {Color.RED}[-]{Color.RESET} No files found")
 
@@ -1208,6 +1125,8 @@ class NmapScanner:
         print(f"   • HTML: {self.reports_dir}/scan_report.html")
         print(f"   • Markdown: {self.reports_dir}/scan_report.md")
         print(f"   • Text: {self.reports_dir}/all_open_ports.txt")
+        if self.credcheck:
+            print(f"   • Credcheck: {self.reports_dir}/CC/")
         print('='*60)
 
 def main():
@@ -1218,8 +1137,9 @@ def main():
 Examples:
   %(prog)s 192.168.1.1 -D scan_results
   %(prog)s 192.168.1.0/24 -D network_scan -p standart
-  %(prog)s 192.168.1.1-100 -D range_scan -p quick --parallel
+  %(prog)s 192.168.1.1-100 -D range_scan -p quick
   %(prog)s scanme.nmap.org -D internet_scan -n "-sC -sV"
+  %(prog)s 192.168.1.0/24 -D cred_scan --credcheck
 
 Profiles: quick, standart, full, udp, stealth, comprehensive
         """
@@ -1230,8 +1150,8 @@ Profiles: quick, standart, full, udp, stealth, comprehensive
     parser.add_argument('-n', '--nmap-args', help='Custom Nmap arguments (overrides profile)')
     parser.add_argument('-p', '--profile', default='standart', 
                        help='Scan profile (quick, standart, full, udp, stealth, comprehensive)')
-    parser.add_argument('--parallel', action='store_true', help='Enable parallel scanning')
-    parser.add_argument('--workers', type=int, default=4, help='Number of parallel workers (default: 4)')
+    parser.add_argument('--credcheck', action='store_true', 
+                       help='Create CC folder with host lists by port for credential checking')
     parser.add_argument('--list-profiles', action='store_true', help='List available profiles and exit')
 
     args = parser.parse_args()
@@ -1267,6 +1187,9 @@ Profiles: quick, standart, full, udp, stealth, comprehensive
         nmap_args = profile['args']
         print(f"{Color.CYAN}[i]{Color.RESET} Using '{args.profile}' profile: {profile['description']}")
 
+    if args.credcheck:
+        print(f"{Color.CYAN}[i]{Color.RESET} Credcheck mode enabled - creating CC folder structure")
+
     hosts_count = calculate_hosts_count(args.target, target_type)
     if hosts_count and hosts_count > 10000:
         print(f"\n{Color.YELLOW}[!]{Color.RESET} WARNING: Large scan detected ({hosts_count} hosts)")
@@ -1276,9 +1199,9 @@ Profiles: quick, standart, full, udp, stealth, comprehensive
             print(f"{Color.YELLOW}[!]{Color.RESET} Scan cancelled")
             sys.exit(0)
 
-    scanner = NmapScanner(args.directory, nmap_args)
+    scanner = NmapScanner(args.directory, nmap_args, args.credcheck)
 
-    success = scanner.run(args.target, target_type, args.parallel, args.workers)
+    success = scanner.run(args.target, target_type)
 
     if success:
         print(f"\n{Color.GREEN}[+]{Color.RESET} SCAN COMPLETED SUCCESSFULLY!")
