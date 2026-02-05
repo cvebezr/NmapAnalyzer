@@ -79,12 +79,8 @@ comprehensive: -sS -sV -sC -A -p-
 ### Credential Checking (--credcheck)
 Creates structured host lists for CredCheck:
 ```bash
-
 # Creates CC/ folder with host lists by port
 ./NmapAnalyzer.py 192.168.1.0/24 -D cred_scan --credcheck
-
-# Use with CredCheck for brute-force testing:
-python3 CredCheck/credcheck.py -p 22 -l reports/CC/22/hosts.txt -U users.txt -P passwords.txt
 ```
 
 Output structure:
