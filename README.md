@@ -88,13 +88,14 @@ python3 CredCheck/credcheck.py -p 22 -l reports/CC/22/hosts.txt -U users.txt -P 
 ```
 
 Output structure:
-text
+```text
 
 reports/CC/
 ├── 22/hosts.txt    # IPs with port 22 open
 ├── 80/hosts.txt    # IPs with port 80 open
 ├── 443/hosts.txt   # IPs with port 443 open
 └── summary.txt     # Port summary
+```
 
 ## Legal Disclaimer
 
