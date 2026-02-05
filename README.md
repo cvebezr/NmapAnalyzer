@@ -1,3 +1,5 @@
+markdown
+
 # NmapAnalyzer
 
 [![Python Version](https://img.shields.io/badge/python-3.6%2B-blue.svg)](https://www.python.org/)
@@ -15,17 +17,18 @@
 ✅ **Flexible Configuration** - Customizable scanning parameters  
 ✅ **Ethical by Default** - Non-intrusive scanning presets  
 ✅ **Professional Reports** - Clean HTML and MD reports with visual categorization  
+✅ **Credential Checking Integration** - Structured host lists for [CredCheck](https://github.com/CVEshnik/CredCheck)  
 
 ## Quick Start
 
-### How to install
+### Installation
 ```bash
-#Clone from git
 git clone https://github.com/cvebezr/NmapAnalyzer
 ```
 
 ### Requirements
 ```bash
+
 # Ubuntu/Debian
 sudo apt-get install nmap xsltproc python3
 
@@ -35,73 +38,116 @@ sudo yum install nmap libxslt python3
 # macOS
 brew install nmap libxslt
 ```
-### How to use
+
+### Basic Usage
 ```bash
+
 sudo chmod +x ./NmapAnalyzer.py
 
-#Scanning with default settings
+# Single host scan
 ./NmapAnalyzer.py 192.168.0.2 -D report 
 
-#Scanning with other NMAP scanning settings
+# Custom Nmap arguments
 ./NmapAnalyzer.py 192.168.0.2 -n "-sC -p-" -D report 
 
-#Scanning /24, /16, /8 networks
+# Network scanning
 ./NmapAnalyzer.py 192.168.1.0/24 -D report
 ./NmapAnalyzer.py 192.168.0.0/16 -D report 
 ./NmapAnalyzer.py 192.0.0.0/8 -D report
 
-#Scanning multiple networks
+# Multi-range scanning
 ./NmapAnalyzer.py 192.168-255.0-255.0-255 -D report
 
-#Scanning with other profiles
+# Scan profiles
 ./NmapAnalyzer.py -p quick 192.168.0.2 -D report
+
+# Credential checking integration
+./NmapAnalyzer.py 192.168.1.0/24 -D credcheck_scan --credcheck
 ```
 
-### Profiles
+### Scan Profiles
 ```bash
+
 quick: -sS -T4 --top-ports 20
-standart: sS -sV -T4 --top-ports 100
+standart: -sS -sV -T4 --top-ports 100
 full: -sS -sV -sC -T4 -A
 udp: -sU -T4 --top-ports 20
 stealth: -sS -T2 -f --top-ports 50
 comprehensive: -sS -sV -sC -A -p-
 ```
 
+### Credential Checking (--credcheck)
+Creates structured host lists for CredCheck:
+```bash
+
+# Creates CC/ folder with host lists by port
+./NmapAnalyzer.py 192.168.1.0/24 -D cred_scan --credcheck
+
+# Use with CredCheck for brute-force testing:
+python3 CredCheck/credcheck.py -p 22 -l reports/CC/22/hosts.txt -U users.txt -P passwords.txt
+```
+
+Output structure:
+text
+
+reports/CC/
+├── 22/hosts.txt    # IPs with port 22 open
+├── 80/hosts.txt    # IPs with port 80 open
+├── 443/hosts.txt   # IPs with port 443 open
+└── summary.txt     # Port summary
+
 ## Legal Disclaimer
 
-**IMPORTANT: LEGAL AND ETHICAL USE ONLY**
-
+IMPORTANT: LEGAL AND ETHICAL USE ONLY
 ### Legal Compliance
-This tool is intended for **AUTHORIZED SECURITY TESTING ONLY**. You must:
-- Only scan networks you own or have explicit written permission to test
-- Comply with all applicable laws (CFAA, Computer Misuse Act, etc.)
-- Obtain proper authorization before any scanning activity
+
+This tool is intended for AUTHORIZED SECURITY TESTING ONLY. You must:
+
+    Only scan networks you own or have explicit written permission to test
+
+    Comply with all applicable laws (CFAA, Computer Misuse Act, etc.)
+
+    Obtain proper authorization before any scanning activity
 
 ### Prohibited Uses
-**STRICTLY FORBIDDEN**:
-- Unauthorized network scanning
-- Testing systems without permission
-- Any illegal or malicious activities
-- Privacy violations
+
+STRICTLY FORBIDDEN:
+
+    Unauthorized network scanning
+
+    Testing systems without permission
+
+    Any illegal or malicious activities
+
+    Privacy violations
 
 ### No Warranty & Liability
-**THE SOFTWARE IS PROVIDED "AS IS"**, WITHOUT WARRANTY OF ANY KIND. 
 
-**THE AUTHOR ASSUMES NO RESPONSIBILITY** for:
-- Misuse or illegal activities with this software
-- Damages from software use
-- Legal consequences of unauthorized scanning
-- Any law violations by users
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
-**YOU ARE SOLELY RESPONSIBLE** for ensuring your activities are legal and authorized.
+THE AUTHOR ASSUMES NO RESPONSIBILITY for:
 
+    Misuse or illegal activities with this software
+
+    Damages from software use
+
+    Legal consequences of unauthorized scanning
+
+    Any law violations by users
+
+YOU ARE SOLELY RESPONSIBLE for ensuring your activities are legal and authorized.
 ### Professional Recommendations
-- Obtain proper certifications (CEH, OSCP, etc.)
-- Always have written authorization
-- Maintain documentation of testing activities
-- Follow established ethical guidelines
 
-### Reporting Security Issues
+    Obtain proper certifications (CEH, OSCP, etc.)
+
+    Always have written authorization
+
+    Maintain documentation of testing activities
+
+    Follow established ethical guidelines
+
+Reporting Security Issues
+
 Report vulnerabilities responsibly to appropriate parties, not publicly.
 
-**USE THIS TOOL RESPONSIBLY AND LEGALLY.**
+USE THIS TOOL RESPONSIBLY AND LEGALLY.
